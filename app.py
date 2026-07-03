@@ -1,122 +1,285 @@
-"""Web wrapper around the DSP core, deployable on Railway.
+"""Web app around the DSP core, deployable on Railway.
 
-This is the deployable *skeleton* for the web-app direction: single-file
-upload -> process -> download, reusing the pure functions in dsp.py unchanged.
-The rich UI (before/after spectrum + loudness plots, batch table, live preset
-preview) is Phase 2 proper, to be built after the preset values are ear-tuned.
+Flow:
+  POST /upload    -> stash the WAV, measure the whole track once
+                     (LUFS, true peak, de-harsh band reference), return meta
+  POST /preview   -> process a short segment (level-matched A/B original +
+                     processed clips, metrics, before/after spectrum) so the
+                     de-harsh can be ear-tuned without committing the full file
+  POST /process   -> process the full track with the tuned settings, stash it
+  GET  /download/<id> -> stream the processed WAV
+  GET  /health    -> Railway liveness probe
 
-Run locally:   python app.py            # Flask dev server on :8000
-Production:    gunicorn app:app         # see Procfile / railway.json
-Health check:  GET /health              # used by Railway
+The DSP core (dsp.py) is imported unchanged -- this module is a thin wrapper.
 """
 
 from __future__ import annotations
 
+import base64
 import io
 import os
+import tempfile
+import threading
+import uuid
+from collections import OrderedDict
 
+import numpy as np
 import soundfile as sf
-from flask import Flask, abort, render_template_string, request, send_file
+from scipy import signal
+from flask import (Flask, abort, jsonify, render_template, request,
+                   send_file)
 
 import dsp
 
 app = Flask(__name__)
-# WAVs are large; allow generous uploads. Railway request timeout still applies.
 app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024  # 200 MB
 
-_PAGE = """<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Suno Post-Processor</title>
-<style>
-  :root { color-scheme: light dark; }
-  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 3rem auto;
-         padding: 0 1rem; line-height: 1.5; }
-  h1 { margin-bottom: .25rem; }
-  p.sub { color: #888; margin-top: 0; }
-  form { display: grid; gap: 1rem; margin-top: 2rem; }
-  label { font-weight: 600; }
-  .row { display: grid; gap: .35rem; }
-  input[type=range] { width: 100%; }
-  button { padding: .7rem 1rem; font-size: 1rem; font-weight: 600; cursor: pointer; }
-  code { background: rgba(128,128,128,.18); padding: .1rem .35rem; border-radius: 4px; }
-  .note { color: #888; font-size: .9rem; }
-</style>
-</head>
-<body>
-  <h1>Suno Post-Processor</h1>
-  <p class="sub">De-harsh &rarr; mud cut &rarr; normalize to -14 LUFS / -1 dBTP</p>
-
-  <form action="/process" method="post" enctype="multipart/form-data">
-    <div class="row">
-      <label for="file">WAV file</label>
-      <input id="file" type="file" name="file" accept=".wav,audio/wav" required>
-    </div>
-    <div class="row">
-      <label for="preset">De-harsh preset</label>
-      <select id="preset" name="preset">
-        {% for p in presets %}
-        <option value="{{ p }}"{{ ' selected' if p == 'Standard' else '' }}>{{ p }}</option>
-        {% endfor %}
-      </select>
-    </div>
-    <div class="row">
-      <label for="intensity">Intensity: <span id="ival">100</span>%</label>
-      <input id="intensity" type="range" name="intensity" min="0" max="150" value="100"
-             oninput="document.getElementById('ival').textContent = this.value">
-    </div>
-    <button type="submit">Process &amp; download</button>
-  </form>
-
-  <p class="note">Skeleton build &mdash; single file in, processed WAV out. Preset
-  thresholds are unvalidated placeholders pending ear-tuning. Plots, batch mode
-  and saved settings come in a later phase.</p>
-</body>
-</html>"""
+# ---------------------------------------------------------------------------
+# tiny in-process stores (single gunicorn worker; fine for a personal tool)
+# ---------------------------------------------------------------------------
+_TMP = os.path.join(tempfile.gettempdir(), "suno_pp")
+os.makedirs(_TMP, exist_ok=True)
+_LOCK = threading.Lock()
+_UPLOADS: "OrderedDict[str, dict]" = OrderedDict()   # id -> {path, meta}
+_DOWNLOADS: "OrderedDict[str, dict]" = OrderedDict()  # id -> {path, name}
+_MAX_KEEP = 12  # cap stored files; evict oldest
 
 
+def _remember(store: "OrderedDict[str, dict]", key: str, value: dict) -> None:
+    with _LOCK:
+        store[key] = value
+        store.move_to_end(key)
+        while len(store) > _MAX_KEEP:
+            _, old = store.popitem(last=False)
+            try:
+                os.remove(old["path"])
+            except OSError:
+                pass
+
+
+def _get_upload(uid: str) -> dict:
+    with _LOCK:
+        rec = _UPLOADS.get(uid)
+        if rec is not None:
+            _UPLOADS.move_to_end(uid)
+    if rec is None:
+        abort(404, "upload not found (it may have expired) -- re-upload the file")
+    return rec
+
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+def _wav_data_uri(audio: np.ndarray, sr: int, subtype: str = "PCM_16") -> str:
+    buf = io.BytesIO()
+    sf.write(buf, audio, sr, format="WAV", subtype=subtype)
+    return "data:audio/wav;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _band_energy_db(x: np.ndarray, sr: int, lo: float, hi: float) -> float:
+    sos = signal.butter(4, [lo, hi], btype="bandpass", fs=sr, output="sos")
+    b = signal.sosfiltfilt(sos, x, axis=0)
+    return float(10.0 * np.log10(np.mean(b ** 2) + 1e-12))
+
+
+def _spectrum(x: np.ndarray, sr: int, grid: np.ndarray) -> list[float]:
+    """Smoothed magnitude spectrum (dB) resampled onto a shared log grid."""
+    mono = x if x.ndim == 1 else x.mean(axis=1)
+    nper = int(min(4096, len(mono)))
+    if nper < 256:
+        nper = len(mono)
+    f, p = signal.welch(mono, fs=sr, nperseg=nper)
+    p_db = 10.0 * np.log10(np.interp(grid, f, p) + 1e-20)
+    return [round(float(v), 2) for v in p_db]
+
+
+def _spectrum_pair(orig: np.ndarray, proc: np.ndarray, sr: int):
+    fmax = min(20000.0, sr / 2.0)
+    grid = np.geomspace(30.0, fmax, 180)
+    return {
+        "freqs": [round(float(v), 1) for v in grid],
+        "orig_db": _spectrum(orig, sr, grid),
+        "proc_db": _spectrum(proc, sr, grid),
+    }
+
+
+def _controls_from_request(data: dict):
+    """Parse preset / intensity / optional manual threshold+ratio."""
+    preset = data.get("preset", "Standard")
+    if preset not in dsp.PRESETS:
+        abort(400, f"unknown preset {preset!r}")
+    try:
+        intensity = float(data.get("intensity", 100))
+    except (TypeError, ValueError):
+        abort(400, "intensity must be a number")
+    intensity = max(0.0, min(150.0, intensity))
+
+    threshold_db = ratio = None
+    if data.get("custom"):
+        try:
+            threshold_db = float(data["threshold_db"])
+            ratio = float(data["ratio"])
+        except (KeyError, TypeError, ValueError):
+            abort(400, "custom mode needs numeric threshold_db and ratio")
+    return preset, intensity, threshold_db, ratio
+
+
+# ---------------------------------------------------------------------------
+# routes
+# ---------------------------------------------------------------------------
 @app.get("/health")
 def health():
-    """Liveness probe for Railway."""
     return {"status": "ok"}, 200
 
 
 @app.get("/")
 def index():
-    return render_template_string(_PAGE, presets=list(dsp.PRESETS))
+    return render_template("index.html", presets=list(dsp.PRESETS))
 
 
-@app.post("/process")
-def process():
+@app.post("/upload")
+def upload():
     upload = request.files.get("file")
     if upload is None or upload.filename == "":
         abort(400, "no file uploaded")
     if not upload.filename.lower().endswith(".wav"):
         abort(400, "please upload a .wav file")
 
-    preset = request.form.get("preset", "Standard")
-    if preset not in dsp.PRESETS:
-        abort(400, f"unknown preset {preset!r}")
-    try:
-        intensity = float(request.form.get("intensity", 100))
-    except ValueError:
-        abort(400, "intensity must be a number")
+    uid = uuid.uuid4().hex
+    path = os.path.join(_TMP, f"{uid}.wav")
+    upload.save(path)
 
     try:
-        audio, sr = sf.read(io.BytesIO(upload.read()), always_2d=False)
+        audio, sr = sf.read(path, always_2d=False)
     except Exception as exc:  # noqa: BLE001
+        try:
+            os.remove(path)
+        except OSError:
+            pass
         abort(400, f"could not read WAV: {exc}")
 
-    processed = dsp.process(audio, sr, preset, intensity)
+    duration = audio.shape[0] / sr
+    channels = 1 if audio.ndim == 1 else audio.shape[1]
+    input_lufs = dsp.integrated_lufs(audio, sr)
+    input_tp = dsp.true_peak_db(audio, sr)
+    band_ref_db = dsp.band_reference_db(audio, sr)
 
-    buf = io.BytesIO()
-    sf.write(buf, processed, sr, subtype="PCM_24", format="WAV")
-    buf.seek(0)
-    base = os.path.splitext(os.path.basename(upload.filename))[0]
-    return send_file(buf, mimetype="audio/wav", as_attachment=True,
-                     download_name=f"{base}_processed.wav")
+    meta = {
+        "sr": sr,
+        "duration": duration,
+        "channels": channels,
+        "input_lufs": None if not np.isfinite(input_lufs) else round(float(input_lufs), 2),
+        "input_tp": round(float(input_tp), 2),
+        "band_ref_db": float(band_ref_db),
+    }
+    _remember(_UPLOADS, uid, {"path": path, "meta": meta})
+
+    return jsonify({"id": uid, "filename": upload.filename, **meta})
+
+
+def _read_segment(path: str, start_s: float, dur_s: float):
+    with sf.SoundFile(path) as f:
+        sr = f.samplerate
+        total = len(f)
+        start = max(0, min(int(start_s * sr), max(0, total - 1)))
+        n = max(1, min(int(dur_s * sr), total - start))
+        f.seek(start)
+        seg = f.read(n, dtype="float64", always_2d=False)
+    return seg, sr
+
+
+@app.post("/preview")
+def preview():
+    data = request.get_json(silent=True) or {}
+    rec = _get_upload(data.get("id", ""))
+    meta = rec["meta"]
+    preset, intensity, threshold_db, ratio = _controls_from_request(data)
+
+    try:
+        dur = float(data.get("duration", 10))
+        start = float(data.get("start", 0))
+    except (TypeError, ValueError):
+        abort(400, "start and duration must be numbers")
+    dur = max(1.0, min(60.0, dur))
+    need_original = bool(data.get("need_original", True))
+
+    seg, sr = _read_segment(rec["path"], start, dur)
+    full_lufs = meta["input_lufs"]  # may be None for silence
+
+    processed = dsp.process(
+        seg, sr, preset=preset, intensity=intensity,
+        threshold_db=threshold_db, ratio=ratio,
+        ref_env_db=meta["band_ref_db"], measured_lufs=full_lufs,
+    )
+    # level-matched original (same loudness gain + ceiling, no EQ) for a fair A/B
+    original = dsp.normalize_loudness(seg, sr, measured_lufs=full_lufs)
+
+    dband = (_band_energy_db(processed, sr, dsp._DEHARSH_LOW, dsp._DEHARSH_HIGH)
+             - _band_energy_db(original, sr, dsp._DEHARSH_LOW, dsp._DEHARSH_HIGH))
+
+    resp = {
+        "processed_wav": _wav_data_uri(processed, sr),
+        "spectrum": _spectrum_pair(original, processed, sr),
+        "metrics": {
+            "input_lufs": full_lufs,
+            "target_lufs": -14.0,
+            "ceiling_dbtp": -1.0,
+            "processed_tp": round(float(dsp.true_peak_db(processed, sr)), 2),
+            "deharsh_db": round(float(dband), 2),
+            "seg_start": round(float(start), 2),
+            "seg_dur": round(float(seg.shape[0] / sr), 2),
+        },
+    }
+    if need_original:
+        resp["original_wav"] = _wav_data_uri(original, sr)
+    return jsonify(resp)
+
+
+@app.post("/process")
+def process_full():
+    data = request.get_json(silent=True) or {}
+    rec = _get_upload(data.get("id", ""))
+    preset, intensity, threshold_db, ratio = _controls_from_request(data)
+
+    audio, sr = sf.read(rec["path"], always_2d=False)
+    processed = dsp.process(audio, sr, preset=preset, intensity=intensity,
+                            threshold_db=threshold_db, ratio=ratio)
+
+    out_lufs = dsp.integrated_lufs(processed, sr)
+    out_tp = dsp.true_peak_db(processed, sr)
+
+    did = uuid.uuid4().hex
+    out_path = os.path.join(_TMP, f"{did}_out.wav")
+    sf.write(out_path, processed, sr, subtype="PCM_24")
+    base = os.path.splitext(os.path.basename(data.get("filename", "track")))[0] or "track"
+    _remember(_DOWNLOADS, did, {"path": out_path, "name": f"{base}_processed.wav"})
+
+    return jsonify({
+        "download_id": did,
+        "metrics": {
+            "output_lufs": None if not np.isfinite(out_lufs) else round(float(out_lufs), 2),
+            "output_tp": round(float(out_tp), 2),
+            "input_lufs": rec["meta"]["input_lufs"],
+            "input_tp": rec["meta"]["input_tp"],
+        },
+    })
+
+
+@app.get("/download/<did>")
+def download(did: str):
+    with _LOCK:
+        rec = _DOWNLOADS.get(did)
+    if rec is None:
+        abort(404, "result not found (it may have expired) -- process again")
+    return send_file(rec["path"], mimetype="audio/wav", as_attachment=True,
+                     download_name=rec["name"])
+
+
+@app.errorhandler(400)
+@app.errorhandler(404)
+@app.errorhandler(413)
+def _json_error(err):
+    return jsonify({"error": getattr(err, "description", str(err))}), err.code
 
 
 if __name__ == "__main__":

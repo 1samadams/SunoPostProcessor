@@ -21,12 +21,15 @@ Suno exports share three consistent, fixable problems:
 ## What it does
 
 - Upload a single WAV (batch upload coming in a later phase)
-- Choose a de-harshing preset (Off / Gentle / Standard / Aggressive) and fine
-  -tune with an intensity slider
+- Choose a de-harshing preset (Off / Gentle / Standard / Aggressive), fine-tune
+  with an intensity slider, or hand-tune threshold & ratio in the Advanced panel
 - Mud cut and loudness normalization run automatically, no tuning needed
-- Shows before/after frequency spectrum and a loudness meter (input → output
-  LUFS against the -14 LUFS / -1 dBTP target) *(Phase 2)*
-- Batch mode shows a results table per file *(Phase 2)*
+- **Tune by ear before committing:** preview a 10 / 15 / 30 s clip (scrub to any
+  start point) with gapless, level-matched A/B between original and processed
+- Live before/after frequency spectrum (3–6 kHz and mud bands highlighted) plus
+  a LUFS / true-peak / de-harsh readout
+- When it sounds right, process the full track and download it
+- Batch mode with a per-file results table is still to come
 
 ## Run locally
 
@@ -67,8 +70,10 @@ Fly, or any host that can run `gunicorn app:app`.
 
 ## Status
 
-Early build. **Phase 1 (DSP core) + a deployable web skeleton are in place.**
-Preset threshold/ratio values are starting points and need ear-tuning against
-real Suno exports — don't assume "Standard" is dialed in yet. The rich web UI
-(before/after plots, batch table, saved settings) is Phase 2, pending that
-ear-test. See CLAUDE.md for the full technical rationale and open questions.
+**Phase 1 (DSP core) + the interactive tuning web UI are in place.** Upload,
+preview short clips, A/B, tune presets/intensity/threshold/ratio, and export
+the full track. Preset threshold/ratio values are still starting points and
+need ear-tuning against real Suno exports — the Advanced panel exists exactly
+so you can find the right values by ear; don't assume "Standard" is dialed in
+yet. Batch/multi-file mode and saved settings are still to come. See CLAUDE.md
+for the full technical rationale and open questions.
