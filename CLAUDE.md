@@ -4,11 +4,17 @@
 Batch/single-file post-processing for WAV exports from Suno AI, targeting three
 specific, well-understood problems with AI-generated mixes:
 
-1. **Dynamic de-harshing (3–6 kHz)** — Suno exports carry resonant buildup in
-   this band from generation/encoding artifacts. Reads as metallic/digital,
-   worst on cymbals and vocal sibilants. Must be a **dynamic** cut (only
-   engages when the band actually spikes), not a static EQ notch — static
-   cuts dull the whole track.
+1. **De-harshing (3–6 kHz)** — Suno exports carry resonant buildup in this band
+   from generation/encoding artifacts. Reads as metallic/digital, worst on
+   cymbals and vocal sibilants. The cut is primarily **dynamic** (engages when
+   the band spikes) so it doesn't dull the whole track — BUT ear-testing on
+   real exports showed the harshness is often a *steady* sheen that never
+   spikes, which a purely-dynamic cut can't touch. So each preset also carries
+   a small **static** band cut (user-approved deviation from "dynamic only"),
+   kept gentle and fully user-controllable (Intensity scales it; Advanced sets
+   it; 0 dB = pure-dynamic). Dynamic handles transient sibilance, static tames
+   steady sheen — without the heavy dulling a fixed static notch caused. See
+   the de-harsh architecture note and the Presets table below.
 2. **Low-mid mud (200–400 Hz)** — static, gentle, wide-Q cut. 1–2 dB. Never
    more than 3 dB (throws away warmth). No dynamics needed here.
 3. **Loudness normalization** — Suno exports land anywhere from -9 to -16
@@ -66,21 +72,23 @@ always fix the spectral issues first, then set final level last.
 Four presets, not six — more choices here just recreates the manual-plugin
 decision fatigue this tool exists to avoid.
 
-Threshold is a **percentile** of the 3–6 kHz band envelope (see architecture
-note above): the preset picks how much of the band's loudest content gets
-compressed.
+Each preset is a **static band cut** (always-on, tames steady sheen) plus a
+**dynamic** stage whose threshold is a **percentile** of the 3–6 kHz band
+envelope (grabs only that % of the loudest, spiky content — see architecture
+note above).
 
-| Preset     | Threshold (pctl) | Grabs loudest | Ratio | Notes                        |
-|------------|------------------|---------------|-------|------------------------------|
-| Off        | —                | —             | —     | bypass, still mud + loudness |
-| Gentle     | 96th             | ~4%           | 2:1   | mild resonance               |
-| Standard   | 91st             | ~9%           | 3:1   | default                      |
-| Aggressive | 84th             | ~16%          | 5:1   | heavy cymbal wash / sibilance|
+| Preset     | Static cut | Threshold (pctl) | Grabs loudest | Ratio | Notes            |
+|------------|-----------|------------------|---------------|-------|------------------|
+| Off        | —         | —                | —             | —     | bypass (mud+loud)|
+| Gentle     | −1.0 dB   | 96th             | ~4%           | 2:1   | mild resonance   |
+| Standard   | −1.5 dB   | 91st             | ~9%           | 3:1   | default          |
+| Aggressive | −3.0 dB   | 84th             | ~16%          | 5:1   | heavy sizzle     |
 
-Plus a single **Intensity slider (0–150%)** that scales the active preset —
-lower percentile (grabs more of the band) and higher ratio — so borderline
-tracks aren't stuck between two presets. The **Advanced** panel exposes the
-percentile ("Sensitivity") and ratio directly for ear-tuning.
+A single **Intensity slider (0–150%)** scales the whole active preset — deeper
+static cut, lower percentile (grabs more), higher ratio — so borderline tracks
+aren't stuck between two presets. The **Advanced** panel exposes the static cut
+(dB), percentile ("Sensitivity") and ratio directly for ear-tuning; set static
+to 0 dB for a purely-dynamic cut.
 
 **Important:** these percentile/ratio numbers are starting points, not gospel.
 They need tuning by ear against real Suno exports before trusting "Standard"

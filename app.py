@@ -108,14 +108,15 @@ def _controls_from_request(data: dict):
         abort(400, "intensity must be a number")
     intensity = max(0.0, min(150.0, intensity))
 
-    threshold_pctl = ratio = None
+    threshold_pctl = ratio = static_db = None
     if data.get("custom"):
         try:
             threshold_pctl = float(data["threshold_pctl"])
             ratio = float(data["ratio"])
+            static_db = min(0.0, float(data["static_db"]))
         except (KeyError, TypeError, ValueError):
-            abort(400, "custom mode needs numeric threshold_pctl and ratio")
-    return preset, intensity, threshold_pctl, ratio
+            abort(400, "custom mode needs numeric threshold_pctl, ratio and static_db")
+    return preset, intensity, threshold_pctl, ratio, static_db
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +201,7 @@ def preview():
     data = request.get_json(silent=True) or {}
     rec = _get_upload(data.get("id", ""))
     meta = rec["meta"]
-    preset, intensity, threshold_pctl, ratio = _controls_from_request(data)
+    preset, intensity, threshold_pctl, ratio, static_db = _controls_from_request(data)
 
     try:
         dur = float(data.get("duration", 10))
@@ -218,7 +219,7 @@ def preview():
 
     processed = dsp.process(
         seg, sr, preset=preset, intensity=intensity,
-        threshold_pctl=threshold_pctl, ratio=ratio,
+        threshold_pctl=threshold_pctl, ratio=ratio, static_db=static_db,
         env_db_ref=env_ref, measured_lufs=gain_lufs,
     )
     # level-matched original (same loudness gain + ceiling, no EQ) for a fair A/B
@@ -226,7 +227,7 @@ def preview():
 
     dh = dsp.deharsh_metrics(seg, sr, preset=preset, intensity=intensity,
                              threshold_pctl=threshold_pctl, ratio=ratio,
-                             env_db_ref=env_ref)
+                             static_db=static_db, env_db_ref=env_ref)
 
     resp = {
         "processed_wav": _wav_data_uri(processed, sr),
@@ -251,11 +252,12 @@ def preview():
 def process_full():
     data = request.get_json(silent=True) or {}
     rec = _get_upload(data.get("id", ""))
-    preset, intensity, threshold_pctl, ratio = _controls_from_request(data)
+    preset, intensity, threshold_pctl, ratio, static_db = _controls_from_request(data)
 
     audio, sr = sf.read(rec["path"], always_2d=False)
     processed = dsp.process(audio, sr, preset=preset, intensity=intensity,
-                            threshold_pctl=threshold_pctl, ratio=ratio)
+                            threshold_pctl=threshold_pctl, ratio=ratio,
+                            static_db=static_db)
 
     out_lufs = dsp.integrated_lufs(processed, sr)
     out_tp = dsp.true_peak_db(processed, sr)
