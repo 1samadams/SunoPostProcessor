@@ -60,8 +60,12 @@
         </div>
 
         <details id="advanced" class="advanced">
-          <summary>Advanced &mdash; hand-tune sensitivity &amp; ratio</summary>
+          <summary>Advanced &mdash; hand-tune static, sensitivity &amp; ratio</summary>
           <label class="chk"><input id="custom" type="checkbox"> Override preset (custom)</label>
+          <div class="slider-row">
+            <label class="lbl" for="static">Static cut <span id="static-val" class="val">&minus;1.5&nbsp;dB</span></label>
+            <input id="static" type="range" min="-6" max="0" value="-1.5" step="0.5" disabled>
+          </div>
           <div class="slider-row">
             <label class="lbl" for="threshold">Sensitivity <span id="threshold-val" class="val">grabs top 9%</span></label>
             <input id="threshold" type="range" min="70" max="99" value="91" step="1" disabled>
@@ -70,8 +74,9 @@
             <label class="lbl" for="ratio">Ratio <span id="ratio-val" class="val">3.0:1</span></label>
             <input id="ratio" type="range" min="1.5" max="8" value="3" step="0.5" disabled>
           </div>
-          <p class="hint">Sensitivity = how much of the band's loudest content the
-          de-harsh grabs. Higher = catches more of the sizzle. Presets are
+          <p class="hint"><b>Static cut</b> = a gentle always-on reduction that
+          tames steady "sheen" (set 0 for pure-dynamic). <b>Sensitivity/Ratio</b>
+          = the dynamic spike-catch for transient sibilance. Presets are
           unvalidated starting points &mdash; tune by ear, then we lock them.</p>
         </details>
 

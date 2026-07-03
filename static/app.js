@@ -1,17 +1,17 @@
 "use strict";
 
-// t = de-harsh threshold percentile (grabs the loudest 100−t % of the band)
+// t = threshold percentile (grabs loudest 100−t %), r = ratio, s = static cut dB
 const PRESET_BASE = {
   Off: null,
-  Gentle: { t: 96, r: 2 },
-  Standard: { t: 91, r: 3 },
-  Aggressive: { t: 84, r: 5 },
+  Gentle: { t: 96, r: 2, s: -1.0 },
+  Standard: { t: 91, r: 3, s: -1.5 },
+  Aggressive: { t: 84, r: 5, s: -3.0 },
 };
 
 const state = {
   id: null, filename: null, sr: 0, duration: 0, channels: 1, inputLufs: null,
   preset: "Standard", intensity: 100,
-  custom: false, threshold: 91, ratio: 3,
+  custom: false, threshold: 91, ratio: 3, static: -1.5,
   dur: 10, start: 0,
   lastSegKey: null, seq: 0,
 };
@@ -141,8 +141,9 @@ $("presets").addEventListener("click", (e) => {
   syncAdvancedDisabled();
   const base = PRESET_BASE[state.preset];
   if (base) {
-    state.threshold = base.t; state.ratio = base.r;
-    $("threshold").value = base.t; $("ratio").value = base.r; updateAdvancedLabels();
+    state.threshold = base.t; state.ratio = base.r; state.static = base.s;
+    $("threshold").value = base.t; $("ratio").value = base.r; $("static").value = base.s;
+    updateAdvancedLabels();
   }
   markPresetModified(false);
   refreshPreview(false);
@@ -168,15 +169,17 @@ $("custom").addEventListener("change", (e) => {
   state.custom = e.target.checked; syncAdvancedDisabled(); markPresetModified(state.custom);
   refreshPreview(false);
 });
-$("threshold").addEventListener("input", (e) => {
-  state.threshold = +e.target.value; updateAdvancedLabels();
+function enterCustom() {
   if (!state.custom) { state.custom = true; $("custom").checked = true; syncAdvancedDisabled(); markPresetModified(true); }
-  refreshPreview(false);
+}
+$("static").addEventListener("input", (e) => {
+  state.static = +e.target.value; updateAdvancedLabels(); enterCustom(); refreshPreview(false);
+});
+$("threshold").addEventListener("input", (e) => {
+  state.threshold = +e.target.value; updateAdvancedLabels(); enterCustom(); refreshPreview(false);
 });
 $("ratio").addEventListener("input", (e) => {
-  state.ratio = +e.target.value; updateAdvancedLabels();
-  if (!state.custom) { state.custom = true; $("custom").checked = true; syncAdvancedDisabled(); markPresetModified(true); }
-  refreshPreview(false);
+  state.ratio = +e.target.value; updateAdvancedLabels(); enterCustom(); refreshPreview(false);
 });
 $("ab-orig").addEventListener("click", () => setActive("orig"));
 $("ab-proc").addEventListener("click", () => setActive("proc"));
@@ -184,10 +187,13 @@ $("play").addEventListener("click", togglePlay);
 
 function syncAdvancedDisabled() {
   const off = state.preset === "Off";
+  $("static").disabled = !state.custom || off;
   $("threshold").disabled = !state.custom || off;
   $("ratio").disabled = !state.custom || off;
 }
 function updateAdvancedLabels() {
+  const s = +state.static;
+  $("static-val").textContent = `${s < 0 ? "−" : ""}${Math.abs(s).toFixed(1)} dB`;
   $("threshold-val").textContent = `grabs top ${Math.round(100 - state.threshold)}%`;
   $("ratio-val").textContent = `${(+state.ratio).toFixed(1)}:1`;
 }
@@ -214,6 +220,7 @@ async function runPreview(segmentChanged) {
   const body = {
     id: state.id, preset: state.preset, intensity: state.intensity,
     custom: state.custom, threshold_pctl: state.threshold, ratio: state.ratio,
+    static_db: state.static,
     duration: state.dur, start: state.start, need_original: needOriginal,
   };
   try {
@@ -330,7 +337,7 @@ $("commit").addEventListener("click", async () => {
       body: JSON.stringify({
         id: state.id, filename: state.filename, preset: state.preset,
         intensity: state.intensity, custom: state.custom,
-        threshold_pctl: state.threshold, ratio: state.ratio,
+        threshold_pctl: state.threshold, ratio: state.ratio, static_db: state.static,
       }),
     });
     const data = await r.json();

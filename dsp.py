@@ -36,14 +36,24 @@ import pyloudnorm as pyln
 # self-calibrating and level-independent (percentile of the track's own band),
 # which matters because de-harsh runs before loudness normalization.
 #
-# NOTE: pctl/ratio values are still unvalidated placeholders -- ear-tune them
-# against real Suno exports (that's what the Advanced panel is for).
+# Each preset also carries a modest STATIC band cut (`static_db`, <= 0) on top
+# of the dynamic spike-catch. Pure-dynamic processing is inaudible on *steady*
+# harshness ("digital sheen" that never spikes above the band's own level), so
+# a gentle always-on cut is what actually tames that -- while the dynamic part
+# still handles transient sibilance. This is a deliberate, user-approved
+# departure from the strict "dynamic only, never static" rule: the static
+# amount is kept small and fully user-controllable (Intensity scales it, the
+# Advanced panel sets it directly, 0 dB reproduces the old pure-dynamic cut) so
+# it tames the sheen without the whole-band dulling a fixed static notch caused.
+#
+# NOTE: pctl/ratio/static values are still unvalidated placeholders -- ear-tune
+# them against real Suno exports (that's what the Advanced panel is for).
 # ---------------------------------------------------------------------------
 PRESETS = {
     "Off": None,  # bypass de-harsh (mud cut + loudness still run)
-    "Gentle": {"pctl": 96.0, "ratio": 2.0},      # grab loudest ~4%
-    "Standard": {"pctl": 91.0, "ratio": 3.0},    # grab loudest ~9%
-    "Aggressive": {"pctl": 84.0, "ratio": 5.0},  # grab loudest ~16%
+    "Gentle": {"pctl": 96.0, "ratio": 2.0, "static_db": -1.0},
+    "Standard": {"pctl": 91.0, "ratio": 3.0, "static_db": -1.5},
+    "Aggressive": {"pctl": 84.0, "ratio": 5.0, "static_db": -3.0},
 }
 
 # De-harsh band (Hz)
@@ -194,7 +204,8 @@ def band_envelope_db(audio: np.ndarray, sr: int, subsample_hz: float = 500.0) ->
 
 def deharsh(audio: np.ndarray, sr: int, preset: str = "Standard",
             intensity: float = 100.0, threshold_pctl: float | None = None,
-            ratio: float | None = None, env_db_ref: np.ndarray | None = None) -> np.ndarray:
+            ratio: float | None = None, env_db_ref: np.ndarray | None = None,
+            static_db: float | None = None) -> np.ndarray:
     """Dynamic downward compression of the 3-6 kHz band.
 
     A single-band downward compressor sidechained to its own bandpass-filtered
@@ -213,36 +224,39 @@ def deharsh(audio: np.ndarray, sr: int, preset: str = "Standard",
              `ratio` are given (manual/custom mode).
     intensity : 0-150 (%). Scales the preset/override. 100 = as-tabled;
                 0 = bypass; 150 = lower percentile (grabs more) + higher ratio.
-    threshold_pctl, ratio : optional manual overrides (Advanced panel). If BOTH
-                are given they replace the preset's base values.
+    threshold_pctl, ratio, static_db : optional manual overrides (Advanced
+                panel). threshold_pctl+ratio (if both given) replace the
+                preset's dynamic values; static_db replaces the static cut.
     env_db_ref : optional whole-track band envelope (from band_envelope_db()).
                 Its distribution sets the threshold percentile; pass it for
                 preview segments so they match the full-track result.
     """
-    resolved = _resolve_deharsh(preset, intensity, threshold_pctl, ratio)
+    resolved = _resolve_deharsh(preset, intensity, threshold_pctl, ratio, static_db)
     if resolved is None or _deharsh_band_edges(sr) is None:
         return np.array(audio, dtype=np.float64, copy=True)  # Off / zero / band too high for sr
-    pctl_eff, ratio_eff = resolved
+    pctl_eff, ratio_eff, static_eff = resolved
 
     audio2d, was_mono = _as_2d(audio)
     band, rest, env = _deharsh_bands(audio2d, sr)
     env_db = 20.0 * np.log10(env + _EPS)
 
-    gr_db = _deharsh_gr_db(env_db, env_db_ref, pctl_eff, ratio_eff)
+    # total band reduction = constant static cut + dynamic spike-catch (both <= 0)
+    gr_db = static_eff + _deharsh_gr_db(env_db, env_db_ref, pctl_eff, ratio_eff)
     gain = 10.0 ** (gr_db / 20.0)
 
     out = rest + band * gain[:, None]
     return _restore_shape(out, was_mono)
 
 
-def _resolve_deharsh(preset, intensity, threshold_pctl, ratio):
-    """Resolve (pctl_eff, ratio_eff) from preset/overrides + intensity.
+def _resolve_deharsh(preset, intensity, threshold_pctl, ratio, static_db=None):
+    """Resolve (pctl_eff, ratio_eff, static_eff) from preset/overrides + intensity.
 
     Returns None when the stage should bypass (Off preset or zero intensity).
     """
     k = float(intensity) / 100.0
     if threshold_pctl is not None and ratio is not None:
         base_pctl, base_ratio = float(threshold_pctl), float(ratio)  # manual/custom
+        base_static = float(static_db) if static_db is not None else 0.0
     else:
         if preset not in PRESETS:
             raise ValueError(f"unknown preset {preset!r}; choose from {list(PRESETS)}")
@@ -251,12 +265,14 @@ def _resolve_deharsh(preset, intensity, threshold_pctl, ratio):
             return None  # Off
         base_pctl = params["pctl"] if threshold_pctl is None else float(threshold_pctl)
         base_ratio = params["ratio"] if ratio is None else float(ratio)
+        base_static = params["static_db"] if static_db is None else float(static_db)
     if k <= 0.0:
         return None  # zero intensity = bypass
-    # scale by intensity: lower percentile (grab more of the band) + higher ratio
+    # scale by intensity: lower percentile (grab more) + higher ratio + deeper static
     pctl_eff = float(np.clip(100.0 - (100.0 - base_pctl) * k, 50.0, 100.0))
     ratio_eff = 1.0 + (base_ratio - 1.0) * k
-    return pctl_eff, ratio_eff
+    static_eff = min(0.0, base_static * k)
+    return pctl_eff, ratio_eff, static_eff
 
 
 def _deharsh_gr_db(env_db, env_db_ref, pctl_eff, ratio_eff):
@@ -272,24 +288,25 @@ def _deharsh_gr_db(env_db, env_db_ref, pctl_eff, ratio_eff):
 
 def deharsh_metrics(audio: np.ndarray, sr: int, preset: str = "Standard",
                     intensity: float = 100.0, threshold_pctl: float | None = None,
-                    ratio: float | None = None,
-                    env_db_ref: np.ndarray | None = None) -> dict:
-    """Peak gain reduction (dB) and engagement duty cycle for given settings.
+                    ratio: float | None = None, env_db_ref: np.ndarray | None = None,
+                    static_db: float | None = None) -> dict:
+    """De-harsh reduction stats for given settings, without applying it.
 
-    Reports what the de-harsh actually does on this audio without applying it,
-    so the UI can show how hard it grabs the spikes -- more meaningful than
-    average band-energy change, which stays tiny for a working de-esser."""
-    resolved = _resolve_deharsh(preset, intensity, threshold_pctl, ratio)
+    static_db  : the constant band cut (always on).
+    peak_gr_db : worst-case total reduction (static + hardest dynamic spike).
+    duty_pct   : how much of the clip the dynamic part adds reduction."""
+    resolved = _resolve_deharsh(preset, intensity, threshold_pctl, ratio, static_db)
     if resolved is None or _deharsh_band_edges(sr) is None:
-        return {"peak_gr_db": 0.0, "duty_pct": 0.0}
-    pctl_eff, ratio_eff = resolved
+        return {"peak_gr_db": 0.0, "static_db": 0.0, "duty_pct": 0.0}
+    pctl_eff, ratio_eff, static_eff = resolved
     audio2d, _ = _as_2d(audio)
     _, _, env = _deharsh_bands(audio2d, sr)
     env_db = 20.0 * np.log10(env + _EPS)
-    gr_db = _deharsh_gr_db(env_db, env_db_ref, pctl_eff, ratio_eff)
+    dyn = _deharsh_gr_db(env_db, env_db_ref, pctl_eff, ratio_eff)
     return {
-        "peak_gr_db": round(float(gr_db.min()), 2),          # most negative
-        "duty_pct": round(float(np.mean(gr_db < -0.1) * 100.0), 1),
+        "peak_gr_db": round(float(static_eff + dyn.min()), 2),  # most negative total
+        "static_db": round(float(static_eff), 2),
+        "duty_pct": round(float(np.mean(dyn < -0.1) * 100.0), 1),
     }
 
 
@@ -388,14 +405,15 @@ def process(audio: np.ndarray, sr: int, preset: str = "Standard",
             intensity: float = 100.0, target_lufs: float = -14.0,
             ceiling_dbtp: float = -1.0, threshold_pctl: float | None = None,
             ratio: float | None = None, env_db_ref: np.ndarray | None = None,
-            measured_lufs: float | None = None) -> np.ndarray:
+            measured_lufs: float | None = None,
+            static_db: float | None = None) -> np.ndarray:
     """Run the full chain: de-harsh -> mud cut -> loudness normalize.
 
-    `threshold_pctl`/`ratio`/`env_db_ref` pass through to deharsh() and
-    `measured_lufs` to normalize_loudness() (see those functions) -- used by
+    `threshold_pctl`/`ratio`/`env_db_ref`/`static_db` pass through to deharsh()
+    and `measured_lufs` to normalize_loudness() (see those functions) -- used by
     the web app's preview path to make short clips match the full track.
     """
-    x = deharsh(audio, sr, preset, intensity, threshold_pctl, ratio, env_db_ref)
+    x = deharsh(audio, sr, preset, intensity, threshold_pctl, ratio, env_db_ref, static_db)
     x = cut_mud(x, sr)
     x = normalize_loudness(x, sr, target_lufs, ceiling_dbtp, measured_lufs)
     return x
