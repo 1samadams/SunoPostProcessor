@@ -1,0 +1,5 @@
+# Ensure libsndfile is present for soundfile. Modern soundfile wheels bundle
+# libsndfile, but installing the system lib avoids a class of load-time errors
+# on minimal images.
+[phases.setup]
+aptPkgs = ["libsndfile1"]
