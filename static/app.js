@@ -1,16 +1,17 @@
 "use strict";
 
+// t = de-harsh threshold percentile (grabs the loudest 100−t % of the band)
 const PRESET_BASE = {
   Off: null,
-  Gentle: { t: -18, r: 2 },
-  Standard: { t: -14, r: 3 },
-  Aggressive: { t: -10, r: 5 },
+  Gentle: { t: 96, r: 2 },
+  Standard: { t: 91, r: 3 },
+  Aggressive: { t: 84, r: 5 },
 };
 
 const state = {
   id: null, filename: null, sr: 0, duration: 0, channels: 1, inputLufs: null,
   preset: "Standard", intensity: 100,
-  custom: false, threshold: -14, ratio: 3,
+  custom: false, threshold: 91, ratio: 3,
   dur: 10, start: 0,
   lastSegKey: null, seq: 0,
 };
@@ -187,7 +188,7 @@ function syncAdvancedDisabled() {
   $("ratio").disabled = !state.custom || off;
 }
 function updateAdvancedLabels() {
-  $("threshold-val").innerHTML = `${state.threshold < 0 ? "−" : ""}${Math.abs(state.threshold)} dB`;
+  $("threshold-val").textContent = `grabs top ${Math.round(100 - state.threshold)}%`;
   $("ratio-val").textContent = `${(+state.ratio).toFixed(1)}:1`;
 }
 function markPresetModified(on) {
@@ -212,7 +213,7 @@ async function runPreview(segmentChanged) {
 
   const body = {
     id: state.id, preset: state.preset, intensity: state.intensity,
-    custom: state.custom, threshold_db: state.threshold, ratio: state.ratio,
+    custom: state.custom, threshold_pctl: state.threshold, ratio: state.ratio,
     duration: state.dur, start: state.start, need_original: needOriginal,
   };
   try {
@@ -256,9 +257,10 @@ function updateMetrics(m) {
   $("m-in").textContent = m.input_lufs ?? "–";
   $("m-tp").textContent = m.processed_tp.toFixed(1);
   cls($("m-tp"), m.processed_tp <= m.ceiling_dbtp + 0.05, false);
-  const dh = m.deharsh_db;
-  $("m-dh").textContent = (dh <= 0 ? "" : "+") + dh.toFixed(1);
-  cls($("m-dh"), dh < -0.2, Math.abs(dh) <= 0.2);
+  const dh = m.deharsh_peak_db;  // peak gain reduction on the worst spike (<= 0)
+  $("m-dh").textContent = dh.toFixed(1);
+  $("m-dh").title = `engaging ${m.deharsh_duty}% of the clip`;
+  cls($("m-dh"), dh <= -0.5, dh < 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -328,7 +330,7 @@ $("commit").addEventListener("click", async () => {
       body: JSON.stringify({
         id: state.id, filename: state.filename, preset: state.preset,
         intensity: state.intensity, custom: state.custom,
-        threshold_db: state.threshold, ratio: state.ratio,
+        threshold_pctl: state.threshold, ratio: state.ratio,
       }),
     });
     const data = await r.json();

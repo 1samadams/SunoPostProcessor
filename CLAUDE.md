@@ -50,27 +50,41 @@ always fix the spectral issues first, then set final level last.
   band only → sum with the rest of the spectrum. This is a single-band
   downward compressor sidechained to its own filtered signal, not a
   multiband compressor split across the whole spectrum — don't over-build it.
+- **De-harsh threshold is a PERCENTILE of the band envelope, not a level
+  relative to its peak.** This matters: an early version referenced the
+  threshold to the band's *peak* (`peak − N dB`), which on dense/steady Suno
+  material (band sits within a few dB of its peak almost constantly) engaged
+  ~100% of the time — a static shelf that dulled the whole top end, the exact
+  failure the "must be dynamic" rule exists to prevent. Referencing a high
+  percentile of the envelope's own distribution means only the loudest few %
+  (the actual spikes) cross the threshold; steady content near the median is
+  left alone. It is self-calibrating and level-independent (percentile of the
+  track's own band), which is what "relative" needs to mean here.
 
 ## Presets (dynamic EQ / step 1)
 
 Four presets, not six — more choices here just recreates the manual-plugin
 decision fatigue this tool exists to avoid.
 
-| Preset     | Threshold      | Ratio | Notes                                  |
-|------------|----------------|-------|-----------------------------------------|
-| Off        | —              | —     | bypass, still runs mud cut + loudness  |
-| Gentle     | -18 dB (rel.)  | 2:1   | mild resonance                          |
-| Standard   | -14 dB (rel.)  | 3:1   | default; tune against real Suno exports |
-| Aggressive | -10 dB (rel.)  | 5:1   | heavy cymbal wash / sibilant vocals     |
+Threshold is a **percentile** of the 3–6 kHz band envelope (see architecture
+note above): the preset picks how much of the band's loudest content gets
+compressed.
 
-Plus a single **Intensity slider (0–150%)** that scales threshold depth and
-ratio of whichever preset is active, so borderline tracks aren't stuck
-between two presets.
+| Preset     | Threshold (pctl) | Grabs loudest | Ratio | Notes                        |
+|------------|------------------|---------------|-------|------------------------------|
+| Off        | —                | —             | —     | bypass, still mud + loudness |
+| Gentle     | 96th             | ~4%           | 2:1   | mild resonance               |
+| Standard   | 91st             | ~9%           | 3:1   | default                      |
+| Aggressive | 84th             | ~16%          | 5:1   | heavy cymbal wash / sibilance|
 
-**Important:** these threshold numbers are starting points, not gospel. They
-need to be tuned by ear against a batch of real Suno exports before trusting
-"Standard" as a true default. Don't treat the table above as validated —
-treat it as the first draft to test.
+Plus a single **Intensity slider (0–150%)** that scales the active preset —
+lower percentile (grabs more of the band) and higher ratio — so borderline
+tracks aren't stuck between two presets. The **Advanced** panel exposes the
+percentile ("Sensitivity") and ratio directly for ear-tuning.
+
+**Important:** these percentile/ratio numbers are starting points, not gospel.
+They need tuning by ear against real Suno exports before trusting "Standard"
+as a true default — treat the table as the first draft to test.
 
 ## Web UI requirements
 

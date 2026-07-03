@@ -60,17 +60,19 @@
         </div>
 
         <details id="advanced" class="advanced">
-          <summary>Advanced &mdash; hand-tune threshold &amp; ratio</summary>
+          <summary>Advanced &mdash; hand-tune sensitivity &amp; ratio</summary>
           <label class="chk"><input id="custom" type="checkbox"> Override preset (custom)</label>
           <div class="slider-row">
-            <label class="lbl" for="threshold">Threshold <span id="threshold-val" class="val">&minus;14&nbsp;dB</span></label>
-            <input id="threshold" type="range" min="-30" max="-2" value="-14" step="0.5" disabled>
+            <label class="lbl" for="threshold">Sensitivity <span id="threshold-val" class="val">grabs top 9%</span></label>
+            <input id="threshold" type="range" min="70" max="99" value="91" step="1" disabled>
           </div>
           <div class="slider-row">
             <label class="lbl" for="ratio">Ratio <span id="ratio-val" class="val">3.0:1</span></label>
             <input id="ratio" type="range" min="1.5" max="8" value="3" step="0.5" disabled>
           </div>
-          <p class="hint">Presets are unvalidated starting points &mdash; tune here by ear, then we lock the values.</p>
+          <p class="hint">Sensitivity = how much of the band's loudest content the
+          de-harsh grabs. Higher = catches more of the sizzle. Presets are
+          unvalidated starting points &mdash; tune by ear, then we lock them.</p>
         </details>
 
         <hr>
@@ -110,7 +112,7 @@
           <div class="meter"><span class="m-label">Input</span><span id="m-in" class="m-val">&ndash;</span><span class="m-unit">LUFS</span></div>
           <div class="meter"><span class="m-label">Target</span><span id="m-target" class="m-val">&minus;14</span><span class="m-unit">LUFS</span></div>
           <div class="meter"><span class="m-label">True peak</span><span id="m-tp" class="m-val">&ndash;</span><span class="m-unit">dBTP</span></div>
-          <div class="meter"><span class="m-label">De-harsh</span><span id="m-dh" class="m-val">&ndash;</span><span class="m-unit">dB band</span></div>
+          <div class="meter"><span class="m-label">De-harsh</span><span id="m-dh" class="m-val">&ndash;</span><span class="m-unit">dB peak</span></div>
         </div>
 
         <div class="spectrum-wrap">

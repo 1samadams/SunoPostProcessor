@@ -76,12 +76,6 @@ def _wav_data_uri(audio: np.ndarray, sr: int, subtype: str = "PCM_16") -> str:
     return "data:audio/wav;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
 
 
-def _band_energy_db(x: np.ndarray, sr: int, lo: float, hi: float) -> float:
-    sos = signal.butter(4, [lo, hi], btype="bandpass", fs=sr, output="sos")
-    b = signal.sosfiltfilt(sos, x, axis=0)
-    return float(10.0 * np.log10(np.mean(b ** 2) + 1e-12))
-
-
 def _spectrum(x: np.ndarray, sr: int, grid: np.ndarray) -> list[float]:
     """Smoothed magnitude spectrum (dB) resampled onto a shared log grid."""
     mono = x if x.ndim == 1 else x.mean(axis=1)
@@ -114,14 +108,14 @@ def _controls_from_request(data: dict):
         abort(400, "intensity must be a number")
     intensity = max(0.0, min(150.0, intensity))
 
-    threshold_db = ratio = None
+    threshold_pctl = ratio = None
     if data.get("custom"):
         try:
-            threshold_db = float(data["threshold_db"])
+            threshold_pctl = float(data["threshold_pctl"])
             ratio = float(data["ratio"])
         except (KeyError, TypeError, ValueError):
-            abort(400, "custom mode needs numeric threshold_db and ratio")
-    return preset, intensity, threshold_db, ratio
+            abort(400, "custom mode needs numeric threshold_pctl and ratio")
+    return preset, intensity, threshold_pctl, ratio
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +156,10 @@ def upload():
     channels = 1 if audio.ndim == 1 else audio.shape[1]
     input_lufs = dsp.integrated_lufs(audio, sr)
     input_tp = dsp.true_peak_db(audio, sr)
-    band_ref_db = dsp.band_reference_db(audio, sr)
+    # whole-track band envelope distribution -> sets the de-harsh threshold
+    # percentile; kept server-side (not sent to the client) and reused for
+    # every preview so a clip matches the full render.
+    env_db_ref = dsp.band_envelope_db(audio, sr)
 
     meta = {
         "sr": sr,
@@ -170,9 +167,8 @@ def upload():
         "channels": channels,
         "input_lufs": None if not np.isfinite(input_lufs) else round(float(input_lufs), 2),
         "input_tp": round(float(input_tp), 2),
-        "band_ref_db": float(band_ref_db),
     }
-    _remember(_UPLOADS, uid, {"path": path, "meta": meta})
+    _remember(_UPLOADS, uid, {"path": path, "meta": meta, "env_db_ref": env_db_ref})
 
     return jsonify({"id": uid, "filename": upload.filename, **meta})
 
@@ -193,7 +189,7 @@ def preview():
     data = request.get_json(silent=True) or {}
     rec = _get_upload(data.get("id", ""))
     meta = rec["meta"]
-    preset, intensity, threshold_db, ratio = _controls_from_request(data)
+    preset, intensity, threshold_pctl, ratio = _controls_from_request(data)
 
     try:
         dur = float(data.get("duration", 10))
@@ -205,17 +201,19 @@ def preview():
 
     seg, sr = _read_segment(rec["path"], start, dur)
     full_lufs = meta["input_lufs"]  # may be None for silence
+    env_ref = rec["env_db_ref"]
 
     processed = dsp.process(
         seg, sr, preset=preset, intensity=intensity,
-        threshold_db=threshold_db, ratio=ratio,
-        ref_env_db=meta["band_ref_db"], measured_lufs=full_lufs,
+        threshold_pctl=threshold_pctl, ratio=ratio,
+        env_db_ref=env_ref, measured_lufs=full_lufs,
     )
     # level-matched original (same loudness gain + ceiling, no EQ) for a fair A/B
     original = dsp.normalize_loudness(seg, sr, measured_lufs=full_lufs)
 
-    dband = (_band_energy_db(processed, sr, dsp._DEHARSH_LOW, dsp._DEHARSH_HIGH)
-             - _band_energy_db(original, sr, dsp._DEHARSH_LOW, dsp._DEHARSH_HIGH))
+    dh = dsp.deharsh_metrics(seg, sr, preset=preset, intensity=intensity,
+                             threshold_pctl=threshold_pctl, ratio=ratio,
+                             env_db_ref=env_ref)
 
     resp = {
         "processed_wav": _wav_data_uri(processed, sr),
@@ -225,7 +223,8 @@ def preview():
             "target_lufs": -14.0,
             "ceiling_dbtp": -1.0,
             "processed_tp": round(float(dsp.true_peak_db(processed, sr)), 2),
-            "deharsh_db": round(float(dband), 2),
+            "deharsh_peak_db": dh["peak_gr_db"],
+            "deharsh_duty": dh["duty_pct"],
             "seg_start": round(float(start), 2),
             "seg_dur": round(float(seg.shape[0] / sr), 2),
         },
@@ -239,11 +238,11 @@ def preview():
 def process_full():
     data = request.get_json(silent=True) or {}
     rec = _get_upload(data.get("id", ""))
-    preset, intensity, threshold_db, ratio = _controls_from_request(data)
+    preset, intensity, threshold_pctl, ratio = _controls_from_request(data)
 
     audio, sr = sf.read(rec["path"], always_2d=False)
     processed = dsp.process(audio, sr, preset=preset, intensity=intensity,
-                            threshold_db=threshold_db, ratio=ratio)
+                            threshold_pctl=threshold_pctl, ratio=ratio)
 
     out_lufs = dsp.integrated_lufs(processed, sr)
     out_tp = dsp.true_peak_db(processed, sr)
