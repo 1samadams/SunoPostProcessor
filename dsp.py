@@ -142,6 +142,19 @@ def true_peak_db(audio: np.ndarray, sr: int, oversample: int = 4) -> float:
 # ---------------------------------------------------------------------------
 # step 1: dynamic de-harsh (3-6 kHz)
 # ---------------------------------------------------------------------------
+def _deharsh_band_edges(sr: int):
+    """(low, high) Hz for the de-harsh bandpass, clamped under Nyquist.
+
+    Returns None if even the low edge won't fit (absurdly low sr) -- callers
+    then bypass de-harsh rather than crash. For any real audio rate (>= 8 kHz)
+    the band stays valid; only the top edge narrows on low-rate files.
+    """
+    hi = min(_DEHARSH_HIGH, 0.98 * (sr / 2.0))
+    if _DEHARSH_LOW >= hi:
+        return None
+    return _DEHARSH_LOW, hi
+
+
 def _deharsh_bands(audio2d: np.ndarray, sr: int):
     """Split the signal for de-harshing.
 
@@ -150,7 +163,8 @@ def _deharsh_bands(audio2d: np.ndarray, sr: int):
     `env` is the stereo-linked fast-attack/slow-release envelope of the band
     that drives the compressor sidechain.
     """
-    sos = signal.butter(4, [_DEHARSH_LOW, _DEHARSH_HIGH], btype="bandpass",
+    lo, hi = _deharsh_band_edges(sr)  # caller guards the None case
+    sos = signal.butter(4, [lo, hi], btype="bandpass",
                         fs=sr, output="sos")
     band = signal.sosfiltfilt(sos, audio2d, axis=0)
     rest = audio2d - band
@@ -169,6 +183,8 @@ def band_envelope_db(audio: np.ndarray, sr: int, subsample_hz: float = 500.0) ->
     own, possibly unrepresentative, slice). Subsampled because the envelope is
     smooth (~120 ms release) so the distribution is preserved at low rate.
     """
+    if _deharsh_band_edges(sr) is None:
+        return np.zeros(1)  # no de-harsh possible at this sr; ref goes unused
     audio2d, _ = _as_2d(audio)
     _, _, env = _deharsh_bands(audio2d, sr)
     env_db = 20.0 * np.log10(env + _EPS)
@@ -204,8 +220,8 @@ def deharsh(audio: np.ndarray, sr: int, preset: str = "Standard",
                 preview segments so they match the full-track result.
     """
     resolved = _resolve_deharsh(preset, intensity, threshold_pctl, ratio)
-    if resolved is None:
-        return np.array(audio, dtype=np.float64, copy=True)  # Off / zero intensity
+    if resolved is None or _deharsh_band_edges(sr) is None:
+        return np.array(audio, dtype=np.float64, copy=True)  # Off / zero / band too high for sr
     pctl_eff, ratio_eff = resolved
 
     audio2d, was_mono = _as_2d(audio)
@@ -264,7 +280,7 @@ def deharsh_metrics(audio: np.ndarray, sr: int, preset: str = "Standard",
     so the UI can show how hard it grabs the spikes -- more meaningful than
     average band-energy change, which stays tiny for a working de-esser."""
     resolved = _resolve_deharsh(preset, intensity, threshold_pctl, ratio)
-    if resolved is None:
+    if resolved is None or _deharsh_band_edges(sr) is None:
         return {"peak_gr_db": 0.0, "duty_pct": 0.0}
     pctl_eff, ratio_eff = resolved
     audio2d, _ = _as_2d(audio)

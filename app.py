@@ -160,6 +160,14 @@ def upload():
     # percentile; kept server-side (not sent to the client) and reused for
     # every preview so a clip matches the full render.
     env_db_ref = dsp.band_envelope_db(audio, sr)
+    # Loudness AFTER the (static) mud cut. The final export normalizes off the
+    # post-EQ loudness, so previews must gain off this -- not the raw input --
+    # or the A/B plays at a different level than the download. De-harsh's own
+    # effect on LUFS is negligible (it only touches brief spikes), so post-mud
+    # is a faithful stand-in for post-full-chain loudness.
+    gain_lufs = dsp.integrated_lufs(dsp.cut_mud(audio, sr), sr)
+    if not np.isfinite(gain_lufs):
+        gain_lufs = input_lufs
 
     meta = {
         "sr": sr,
@@ -168,7 +176,10 @@ def upload():
         "input_lufs": None if not np.isfinite(input_lufs) else round(float(input_lufs), 2),
         "input_tp": round(float(input_tp), 2),
     }
-    _remember(_UPLOADS, uid, {"path": path, "meta": meta, "env_db_ref": env_db_ref})
+    _remember(_UPLOADS, uid, {
+        "path": path, "meta": meta, "env_db_ref": env_db_ref,
+        "gain_lufs": None if not np.isfinite(gain_lufs) else float(gain_lufs),
+    })
 
     return jsonify({"id": uid, "filename": upload.filename, **meta})
 
@@ -200,16 +211,18 @@ def preview():
     need_original = bool(data.get("need_original", True))
 
     seg, sr = _read_segment(rec["path"], start, dur)
-    full_lufs = meta["input_lufs"]  # may be None for silence
+    # gain off the post-EQ (post-mud) whole-track loudness so the preview level
+    # matches the export; fall back to raw input if unavailable.
+    gain_lufs = rec.get("gain_lufs") if rec.get("gain_lufs") is not None else meta["input_lufs"]
     env_ref = rec["env_db_ref"]
 
     processed = dsp.process(
         seg, sr, preset=preset, intensity=intensity,
         threshold_pctl=threshold_pctl, ratio=ratio,
-        env_db_ref=env_ref, measured_lufs=full_lufs,
+        env_db_ref=env_ref, measured_lufs=gain_lufs,
     )
     # level-matched original (same loudness gain + ceiling, no EQ) for a fair A/B
-    original = dsp.normalize_loudness(seg, sr, measured_lufs=full_lufs)
+    original = dsp.normalize_loudness(seg, sr, measured_lufs=gain_lufs)
 
     dh = dsp.deharsh_metrics(seg, sr, preset=preset, intensity=intensity,
                              threshold_pctl=threshold_pctl, ratio=ratio,
@@ -219,7 +232,7 @@ def preview():
         "processed_wav": _wav_data_uri(processed, sr),
         "spectrum": _spectrum_pair(original, processed, sr),
         "metrics": {
-            "input_lufs": full_lufs,
+            "input_lufs": meta["input_lufs"],
             "target_lufs": -14.0,
             "ceiling_dbtp": -1.0,
             "processed_tp": round(float(dsp.true_peak_db(processed, sr)), 2),
@@ -279,6 +292,13 @@ def download(did: str):
 @app.errorhandler(413)
 def _json_error(err):
     return jsonify({"error": getattr(err, "description", str(err))}), err.code
+
+
+@app.errorhandler(Exception)
+def _unhandled(err):
+    # never leak a stack-trace HTML page to the fetch() client -- return JSON
+    app.logger.exception("unhandled error")
+    return jsonify({"error": f"server error: {type(err).__name__}"}), 500
 
 
 if __name__ == "__main__":

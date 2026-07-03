@@ -144,6 +144,17 @@ settings between runs.
   exports — treat current values as placeholders.
 - Whether envelope follower should be peak or RMS-based may need A/B testing
   on actual cymbal-heavy vs vocal-heavy tracks.
+- **De-harsh band is fixed at 3–6 kHz, but measured real "air"/sibilance
+  harshness often sits higher (6–10 kHz+).** If ear-testing shows the sizzle
+  lives above 6 kHz, revisit the band (widen or shift up) — don't change it
+  silently; it's an architecture decision. The band edges auto-clamp under
+  Nyquist so low-sr files don't crash (de-harsh just narrows/bypasses).
+- **Loudness on high-crest material lands slightly under −14 LUFS** (~0.5 dB on
+  very peaky tracks) because the true-peak ceiling is honoured without
+  crushing transients. This is the intended "normalize, don't limit-for-
+  loudness" tradeoff (CLAUDE.md step 3) — hitting −14 exactly on those tracks
+  would require aggressive limiting we deliberately avoid. The commit screen
+  shows the actual output LUFS so it's never silent about a miss.
 - Batch mode UX (process-then-review vs review-each-file) — ask before
   building the more complex version. (Single-file preview/tuning is built;
   batch is not yet.)
