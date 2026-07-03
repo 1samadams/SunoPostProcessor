@@ -310,6 +310,32 @@ def deharsh_metrics(audio: np.ndarray, sr: int, preset: str = "Standard",
     }
 
 
+def deharsh_gr_series(audio: np.ndarray, sr: int, preset: str = "Standard",
+                      intensity: float = 100.0, threshold_pctl: float | None = None,
+                      ratio: float | None = None, env_db_ref: np.ndarray | None = None,
+                      static_db: float | None = None, points: int = 360) -> list[float]:
+    """De-harsh total gain reduction (dB, <= 0) over time, downsampled to
+    `points` bins for a timeline plot.
+
+    Each bin holds the *deepest* reduction in that slice (min), so brief
+    dynamic spikes stay visible; the constant static cut is the baseline.
+    """
+    resolved = _resolve_deharsh(preset, intensity, threshold_pctl, ratio, static_db)
+    if resolved is None or _deharsh_band_edges(sr) is None:
+        return [0.0] * points
+    pctl_eff, ratio_eff, static_eff = resolved
+    audio2d, _ = _as_2d(audio)
+    _, _, env = _deharsh_bands(audio2d, sr)
+    env_db = 20.0 * np.log10(env + _EPS)
+    total = static_eff + _deharsh_gr_db(env_db, env_db_ref, pctl_eff, ratio_eff)
+    edges = np.linspace(0, total.shape[0], points + 1).astype(int)
+    out = []
+    for i in range(points):
+        a, b = edges[i], edges[i + 1]
+        out.append(round(float(total[a:b].min()), 2) if b > a else 0.0)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # step 2: static mud cut (200-400 Hz)
 # ---------------------------------------------------------------------------

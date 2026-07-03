@@ -113,6 +113,15 @@
           <span id="time" class="time muted">0:00</span>
         </div>
 
+        <!-- de-harsh gain-reduction over the clip, playhead synced to A/B -->
+        <div class="gr-wrap">
+          <div class="gr-head"><span>De-harsh reduction</span><span id="gr-scale" class="muted">0 dB</span></div>
+          <div class="gr-canvas-wrap">
+            <canvas id="grtl" width="640" height="70"></canvas>
+            <div id="gr-playhead" class="playhead"></div>
+          </div>
+        </div>
+
         <div class="meters">
           <div class="meter"><span class="m-label">Input</span><span id="m-in" class="m-val">&ndash;</span><span class="m-unit">LUFS</span></div>
           <div class="meter"><span class="m-label">Target</span><span id="m-target" class="m-val">&minus;14</span><span class="m-unit">LUFS</span></div>
@@ -121,10 +130,13 @@
         </div>
 
         <div class="spectrum-wrap">
-          <canvas id="spectrum" width="640" height="220"></canvas>
+          <canvas id="spectrum" width="640" height="200"></canvas>
+          <div class="diff-head"><span>What changed</span><span class="muted">processed &minus; original</span></div>
+          <canvas id="specdiff" width="640" height="70"></canvas>
           <div class="legend">
             <span class="lg lg-orig">Original</span>
             <span class="lg lg-proc">Processed</span>
+            <span class="lg lg-diff">Change</span>
             <span class="lg lg-band">3&ndash;6&nbsp;kHz</span>
             <span class="lg lg-mud">mud</span>
           </div>
