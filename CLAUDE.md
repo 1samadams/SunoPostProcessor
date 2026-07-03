@@ -88,10 +88,28 @@ upload" and the surface is a browser page instead of a Tkinter window:
 - Batch mode should show per-file results in a simple table (filename, input
   LUFS, output LUFS, peak reduction applied)
 
-**Current state:** `app.py` is the deployable *skeleton* — single-file
-upload → process → download + a `/health` check, reusing `dsp.py` unchanged.
-The plots, batch table, and saved settings above are Phase 2, to be built
-after the preset values are ear-tuned.
+**Current state:** the interactive tuning UI is built (`app.py` +
+`templates/index.html` + `static/`). Upload once, then everything previews
+off short **10 / 15 / 30 s** clips with a start-position scrubber:
+
+- Preset segmented control + intensity slider, plus a collapsible **Advanced**
+  panel that hand-tunes threshold & ratio directly (this is the ear-tuning
+  surface — kept behind a disclosure so the default view stays at 4 presets,
+  no decision fatigue). Steps 2 & 3 stay automatic, no controls.
+- **Gapless A/B**: original and processed clips play in sync; a toggle gates
+  which you hear. The original is level-matched (same loudness gain + ceiling,
+  no EQ) so the A/B is honest — only the de-harsh/mud differ, not level.
+- Live before/after **spectrum** (server-computed magnitudes drawn on a canvas)
+  with the 3–6 kHz and 200–400 Hz bands highlighted, plus a LUFS / true-peak /
+  de-harsh-Δband readout.
+- **Process full track** commit → download, using the tuned settings.
+
+Preview correctness: the de-harsh band reference and loudness gain are measured
+once on the whole track at upload and reused for every preview segment, so a
+clip sounds like its slice of the final render.
+
+Still **Phase 2/3 TODO:** batch/multi-file upload + results table, and saved
+settings between runs.
 
 ## Code style / conventions
 - Keep the DSP core (de-harsh, mud cut, loudness normalize) as pure functions
@@ -113,4 +131,10 @@ after the preset values are ear-tuned.
 - Whether envelope follower should be peak or RMS-based may need A/B testing
   on actual cymbal-heavy vs vocal-heavy tracks.
 - Batch mode UX (process-then-review vs review-each-file) — ask before
-  building the more complex version.
+  building the more complex version. (Single-file preview/tuning is built;
+  batch is not yet.)
+- Preview clips use short segments (10/15/30 s) with a whole-track reference
+  for the de-harsh threshold and loudness gain. The reference is measured once
+  at upload; if a track's character varies a lot across its length, the ideal
+  preview start point is wherever the harshness actually lives — hence the
+  start scrubber.

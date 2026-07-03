@@ -138,21 +138,39 @@ def true_peak_db(audio: np.ndarray, sr: int, oversample: int = 4) -> float:
 # ---------------------------------------------------------------------------
 # step 1: dynamic de-harsh (3-6 kHz)
 # ---------------------------------------------------------------------------
-def _deharsh_threshold(env: np.ndarray, offset_db: float) -> float:
-    """Absolute envelope threshold (linear) from a per-track reference.
+def _deharsh_bands(audio2d: np.ndarray, sr: int):
+    """Split the signal for de-harshing.
 
-    Reference = loudest moment of the band envelope. `offset_db` (negative,
-    e.g. -14) sets the threshold that many dB below that peak, so compression
-    engages on the top |offset_db| of the band's dynamic range -- i.e. only
-    the loud resonant spikes, not the whole band. Being relative to the
-    track's own band peak makes engagement level-independent.
+    Returns (band, rest, env) where `band` is the zero-phase 3-6 kHz bandpass,
+    `rest` = audio - band (so band + rest reconstructs the input exactly), and
+    `env` is the stereo-linked fast-attack/slow-release envelope of the band
+    that drives the compressor sidechain.
     """
-    ref_db = 20.0 * np.log10(np.max(env) + _EPS)
-    return 10.0 ** ((ref_db + offset_db) / 20.0)
+    sos = signal.butter(4, [_DEHARSH_LOW, _DEHARSH_HIGH], btype="bandpass",
+                        fs=sr, output="sos")
+    band = signal.sosfiltfilt(sos, audio2d, axis=0)
+    rest = audio2d - band
+    sidechain = np.mean(np.abs(band), axis=1)  # one envelope for both channels
+    env = _asym_envelope(sidechain, sr, _ATTACK_S, _RELEASE_S)
+    return band, rest, env
+
+
+def band_reference_db(audio: np.ndarray, sr: int) -> float:
+    """dBFS of the loudest moment of the 3-6 kHz band envelope for a signal.
+
+    The de-harsh threshold is set relative to this. Compute it once on the
+    WHOLE track and pass it back into deharsh()/process() as `ref_env_db` so a
+    short preview segment engages exactly as its slice of the full track will
+    (otherwise a 10 s clip picks its own, different reference).
+    """
+    audio2d, _ = _as_2d(audio)
+    _, _, env = _deharsh_bands(audio2d, sr)
+    return float(20.0 * np.log10(np.max(env) + _EPS))
 
 
 def deharsh(audio: np.ndarray, sr: int, preset: str = "Standard",
-            intensity: float = 100.0) -> np.ndarray:
+            intensity: float = 100.0, threshold_db: float | None = None,
+            ratio: float | None = None, ref_env_db: float | None = None) -> np.ndarray:
     """Dynamic downward compression of the 3-6 kHz band.
 
     A single-band downward compressor sidechained to its own bandpass-filtered
@@ -162,41 +180,48 @@ def deharsh(audio: np.ndarray, sr: int, preset: str = "Standard",
     Parameters
     ----------
     preset : one of PRESETS keys ("Off", "Gentle", "Standard", "Aggressive").
-             "Off" bypasses this stage (returns a copy).
+             "Off" bypasses this stage (returns a copy). Ignored when both
+             `threshold_db` and `ratio` are given (manual/custom mode).
     intensity : 0-150 (%). Scales threshold depth and ratio of the active
-                preset. 100 = preset as-tabled; 0 = effectively bypass;
-                150 = deeper threshold + higher ratio.
+                preset/overrides. 100 = as-tabled; 0 = bypass; 150 = deeper.
+    threshold_db, ratio : optional manual overrides. If BOTH are given, they
+                replace the preset's base values (still scaled by intensity),
+                so the Advanced UI panel can hand-tune without a preset.
+    ref_env_db : optional external band reference (dBFS). Pass the whole-track
+                value from band_reference_db() when processing a preview
+                segment so it matches the full-track result.
     """
-    if preset not in PRESETS:
-        raise ValueError(f"unknown preset {preset!r}; choose from {list(PRESETS)}")
-
-    params = PRESETS[preset]
     k = float(intensity) / 100.0
-    if params is None or k <= 0.0:
-        return np.array(audio, dtype=np.float64, copy=True)
 
-    # scale preset by intensity: deeper threshold, higher ratio
-    offset_db = params["threshold_db"] * k
-    ratio = 1.0 + (params["ratio"] - 1.0) * k
+    if threshold_db is not None and ratio is not None:
+        base_offset, base_ratio = float(threshold_db), float(ratio)  # manual/custom
+    else:
+        if preset not in PRESETS:
+            raise ValueError(f"unknown preset {preset!r}; choose from {list(PRESETS)}")
+        params = PRESETS[preset]
+        if params is None:
+            return np.array(audio, dtype=np.float64, copy=True)  # Off
+        base_offset = params["threshold_db"] if threshold_db is None else float(threshold_db)
+        base_ratio = params["ratio"] if ratio is None else float(ratio)
+
+    if k <= 0.0:
+        return np.array(audio, dtype=np.float64, copy=True)  # zero intensity = bypass
+
+    # scale by intensity: deeper threshold, higher ratio
+    offset_db = base_offset * k
+    ratio_eff = 1.0 + (base_ratio - 1.0) * k
 
     audio2d, was_mono = _as_2d(audio)
+    band, rest, env = _deharsh_bands(audio2d, sr)
 
-    # bandpass the de-harsh region; zero-phase so band + (audio-band) == audio
-    sos = signal.butter(4, [_DEHARSH_LOW, _DEHARSH_HIGH], btype="bandpass",
-                        fs=sr, output="sos")
-    band = signal.sosfiltfilt(sos, audio2d, axis=0)
-    rest = audio2d - band
-
-    # stereo-linked sidechain: one envelope drives both channels (no image shift)
-    sidechain = np.mean(np.abs(band), axis=1)
-    env = _asym_envelope(sidechain, sr, _ATTACK_S, _RELEASE_S)
+    # threshold sits `offset_db` below the band reference (whole-track or local)
+    ref_db = ref_env_db if ref_env_db is not None else 20.0 * np.log10(np.max(env) + _EPS)
+    thresh_db = ref_db + offset_db
 
     # static gain-reduction curve (hard knee), applied to the band only
-    thresh = _deharsh_threshold(env, offset_db)
     env_db = 20.0 * np.log10(env + _EPS)
-    thresh_db = 20.0 * np.log10(thresh + _EPS)
     over = env_db - thresh_db
-    gr_db = np.where(over > 0.0, over * (1.0 / ratio - 1.0), 0.0)  # <= 0
+    gr_db = np.where(over > 0.0, over * (1.0 / ratio_eff - 1.0), 0.0)  # <= 0
     gain = 10.0 ** (gr_db / 20.0)
 
     out = rest + band * gain[:, None]
@@ -261,17 +286,23 @@ def _true_peak_limit(audio2d: np.ndarray, sr: int, ceiling_lin: float,
 
 
 def normalize_loudness(audio: np.ndarray, sr: int, target_lufs: float = -14.0,
-                       ceiling_dbtp: float = -1.0) -> np.ndarray:
+                       ceiling_dbtp: float = -1.0,
+                       measured_lufs: float | None = None) -> np.ndarray:
     """Normalize integrated loudness to target_lufs with a true-peak ceiling.
 
     Applies broadband gain to hit target_lufs, then a true-peak limiter so the
     output never exceeds ceiling_dbtp. This is normalization for consistency,
     not limiting-for-loudness -- the limiter only catches stray inter-sample
     peaks (see CLAUDE.md).
+
+    measured_lufs : if given, use it as the source loudness instead of
+        measuring `audio`. Lets a preview segment be shifted by the *full
+        track's* gain (level-matched to the final result) rather than by its
+        own segment loudness.
     """
     audio2d, was_mono = _as_2d(audio)
 
-    loudness = integrated_lufs(audio2d, sr)
+    loudness = measured_lufs if measured_lufs is not None else integrated_lufs(audio2d, sr)
     if not np.isfinite(loudness):
         # silence / below gate: nothing meaningful to normalize
         return _restore_shape(np.array(audio2d, copy=True), was_mono)
@@ -286,13 +317,20 @@ def normalize_loudness(audio: np.ndarray, sr: int, target_lufs: float = -14.0,
 
 
 # ---------------------------------------------------------------------------
-# full chain convenience wrapper (used by CLI test script and, later, GUI/CLI)
+# full chain convenience wrapper (used by the CLI test script and web app)
 # ---------------------------------------------------------------------------
 def process(audio: np.ndarray, sr: int, preset: str = "Standard",
             intensity: float = 100.0, target_lufs: float = -14.0,
-            ceiling_dbtp: float = -1.0) -> np.ndarray:
-    """Run the full chain: de-harsh -> mud cut -> loudness normalize."""
-    x = deharsh(audio, sr, preset, intensity)
+            ceiling_dbtp: float = -1.0, threshold_db: float | None = None,
+            ratio: float | None = None, ref_env_db: float | None = None,
+            measured_lufs: float | None = None) -> np.ndarray:
+    """Run the full chain: de-harsh -> mud cut -> loudness normalize.
+
+    `threshold_db`/`ratio`/`ref_env_db` pass through to deharsh() and
+    `measured_lufs` to normalize_loudness() (see those functions) -- used by
+    the web app's preview path to make short clips match the full track.
+    """
+    x = deharsh(audio, sr, preset, intensity, threshold_db, ratio, ref_env_db)
     x = cut_mud(x, sr)
-    x = normalize_loudness(x, sr, target_lufs, ceiling_dbtp)
+    x = normalize_loudness(x, sr, target_lufs, ceiling_dbtp, measured_lufs)
     return x
