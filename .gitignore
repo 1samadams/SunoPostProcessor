@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.wav
+_selftest_*.wav
+*_processed.wav
+.venv/
+venv/
