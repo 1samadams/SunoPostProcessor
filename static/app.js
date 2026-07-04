@@ -123,6 +123,13 @@ async function doUpload(file) {
     $("start").max = Math.max(0, data.duration - state.dur).toFixed(1);
     $("start").value = 0; $("start-val").textContent = "0:00";
     $("workspace").classList.remove("hidden");
+    if (data.spectrogram) {
+      specgram = decodeSpectrogram(data.spectrogram);
+      $("specgram-card").classList.remove("hidden");
+      drawSpectrogram(specgram);
+    } else {
+      specgram = null; $("specgram-card").classList.add("hidden");
+    }
     refreshPreview(true);
   } catch (err) {
     toast(err.message);
@@ -275,6 +282,7 @@ function updateMetrics(m) {
   $("m-dh").textContent = dh.toFixed(1);
   $("m-dh").title = `engaging ${m.deharsh_duty}% of the clip`;
   cls($("m-dh"), dh <= -0.5, dh < 0);
+  updateLoudness(m);
 }
 
 // ---------------------------------------------------------------------------
@@ -400,12 +408,89 @@ function drawGRTimeline(series) {
   $("gr-scale").textContent = `0 to −${range} dB`;
 }
 
+// ---------------------------------------------------------------------------
+// whole-track spectrogram (input harshness map)
+// ---------------------------------------------------------------------------
+const MAGMA = (() => {
+  const a = [[0, 0, 0, 4], [.25, 81, 18, 124], [.5, 183, 55, 121], [.75, 252, 137, 97], [1, 252, 253, 191]];
+  const r = new Uint8Array(256), g = new Uint8Array(256), b = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) {
+    const x = i / 255; let lo = a[0], hi = a[a.length - 1];
+    for (let k = 0; k < a.length - 1; k++) if (x >= a[k][0] && x <= a[k + 1][0]) { lo = a[k]; hi = a[k + 1]; break; }
+    const t = (x - lo[0]) / ((hi[0] - lo[0]) || 1);
+    r[i] = lo[1] + (hi[1] - lo[1]) * t; g[i] = lo[2] + (hi[2] - lo[2]) * t; b[i] = lo[3] + (hi[3] - lo[3]) * t;
+  }
+  return { r, g, b };
+})();
+let specgram = null;  // {n_time,n_freq,fmin,fmax,bytes}
+
+function decodeSpectrogram(sg) {
+  const bin = atob(sg.data), u = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+  return { n_time: sg.n_time, n_freq: sg.n_freq, fmin: sg.fmin, fmax: sg.fmax, bytes: u };
+}
+
+function drawSpectrogram(sg) {
+  const cv = $("specgram"), dpr = window.devicePixelRatio || 1;
+  const W = cv.clientWidth || 900, H = 200;
+  cv.width = W * dpr; cv.height = H * dpr;
+  const ctx = cv.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const T = sg.n_time, F = sg.n_freq, bytes = sg.bytes;
+  const off = document.createElement("canvas"); off.width = T; off.height = F;
+  const octx = off.getContext("2d"), img = octx.createImageData(T, F);
+  for (let fi = 0; fi < F; fi++) {
+    const dst = (F - 1 - fi) * T;                 // invert: high freq at top
+    for (let ti = 0; ti < T; ti++) {
+      const v = bytes[fi * T + ti], p = (dst + ti) * 4;
+      img.data[p] = MAGMA.r[v]; img.data[p + 1] = MAGMA.g[v]; img.data[p + 2] = MAGMA.b[v]; img.data[p + 3] = 255;
+    }
+  }
+  octx.putImageData(img, 0, 0);
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(off, 0, 0, T, F, 0, 0, W, H);
+
+  const lo = Math.log10(sg.fmin), hi = Math.log10(sg.fmax);
+  const yOf = (fr) => (1 - (Math.log10(fr) - lo) / (hi - lo)) * H;
+  ctx.fillStyle = "rgba(124,92,255,.16)";
+  ctx.fillRect(0, yOf(6000), W, yOf(3000) - yOf(6000));           // 3-6 kHz band
+  ctx.strokeStyle = "rgba(124,92,255,.55)"; ctx.lineWidth = 1;
+  [3000, 6000].forEach((fr) => { const y = yOf(fr); ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); });
+
+  const ax = $("sg-yaxis"); ax.innerHTML = "";
+  [100, 1000, 3000, 6000, 10000].forEach((fr) => {
+    if (fr < sg.fmin || fr > sg.fmax) return;
+    const s = document.createElement("span");
+    s.style.top = `${(yOf(fr) / H) * 100}%`;
+    s.textContent = fr >= 1000 ? `${fr / 1000}k` : `${fr}`;
+    ax.appendChild(s);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// graphical loudness / true-peak meter
+// ---------------------------------------------------------------------------
+const pct = (v, lo, hi) => Math.max(0, Math.min(100, ((v - lo) / (hi - lo)) * 100));
+function updateLoudness(m) {
+  if (m.input_lufs == null) return;
+  const LMIN = -24, LMAX = -6;
+  $("lufs-fill").style.width = `${pct(m.target_lufs, LMIN, LMAX)}%`;
+  $("lufs-target").style.left = `${pct(m.target_lufs, LMIN, LMAX)}%`;
+  $("lufs-in").style.left = `${pct(m.input_lufs, LMIN, LMAX)}%`;
+  $("lufs-txt").textContent = `${m.input_lufs}→${m.target_lufs}`;
+  const PMIN = -18, PMAX = 0;
+  $("tp-fill").style.width = `${pct(m.processed_tp, PMIN, PMAX)}%`;
+  $("tp-ceil").style.left = `${pct(m.ceiling_dbtp, PMIN, PMAX)}%`;
+  $("tp2-txt").textContent = `${m.processed_tp}`;
+}
+
 let _resizeT = null;
 window.addEventListener("resize", () => {
   clearTimeout(_resizeT);
   _resizeT = setTimeout(() => {
     if (lastSpectrum) { drawSpectrum(lastSpectrum); drawSpectrumDiff(lastSpectrum); }
     if (lastGr) drawGRTimeline(lastGr);
+    if (specgram) drawSpectrogram(specgram);
   }, 150);
 });
 

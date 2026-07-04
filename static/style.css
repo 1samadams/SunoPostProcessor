@@ -142,6 +142,37 @@ input[type=range]:disabled { opacity: .45; }
 .m-unit { font-size: .66rem; color: var(--muted); }
 .m-val.good { color: var(--good); } .m-val.warn { color: var(--warn); } .m-val.bad { color: var(--bad); }
 
+/* whole-track spectrogram */
+.specgram { padding: 1rem 1.1rem; margin-bottom: 1rem; }
+.sg-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem;
+  flex-wrap: wrap; margin-bottom: .7rem; }
+.sg-head h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .09em;
+  color: var(--muted); margin: 0; }
+.sg-head .muted { font-size: .78rem; }
+.sg-wrap { position: relative; padding-left: 34px; }
+#specgram { width: 100%; height: auto; display: block; border-radius: 8px;
+  background: #05060a; }
+.sg-yaxis { position: absolute; left: 0; top: 0; bottom: 0; width: 32px; font-size: .62rem;
+  color: var(--muted); font-variant-numeric: tabular-nums; }
+.sg-yaxis span { position: absolute; right: 4px; transform: translateY(-50%); }
+
+/* graphical loudness / true-peak meter */
+.loud { background: var(--bg2); border: 1px solid var(--line); border-radius: 10px;
+  padding: .7rem .8rem; margin-bottom: 1.2rem; display: grid; gap: .55rem; }
+.loud-row { display: grid; grid-template-columns: 42px 1fr 58px; align-items: center; gap: .6rem; }
+.loud-lab { font-size: .68rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.loud-val { font-size: .82rem; font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; }
+.gauge { position: relative; height: 12px; background: #0a0c12; border: 1px solid var(--line);
+  border-radius: 6px; overflow: hidden; }
+.gauge-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0;
+  background: linear-gradient(90deg, rgba(52,211,153,.35), var(--good)); }
+.gauge-fill.tp { background: linear-gradient(90deg, rgba(34,211,238,.3), var(--accent2)); }
+.gauge-tick { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--text); opacity: .8; }
+.gauge-tick.ceil { background: var(--bad); opacity: .95; }
+.gauge-dot { position: absolute; top: 50%; width: 9px; height: 9px; border-radius: 50%;
+  background: var(--muted); border: 2px solid var(--bg2); transform: translate(-50%, -50%); }
+.loud-legend { font-size: .7rem; }
+
 /* de-harsh gain-reduction timeline */
 .gr-wrap { background: var(--bg2); border: 1px solid var(--line); border-radius: 10px;
   padding: .5rem .6rem; margin-bottom: 1.2rem; }
