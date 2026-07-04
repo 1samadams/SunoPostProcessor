@@ -123,8 +123,18 @@ off short **10 / 15 / 30 s** clips with a start-position scrubber:
   no EQ) so the A/B is honest — only the de-harsh/mud differ, not level.
 - Live before/after **spectrum** (server-computed magnitudes drawn on a canvas)
   with the 3–6 kHz and 200–400 Hz bands highlighted, plus a LUFS / true-peak /
-  de-harsh-Δband readout.
+  de-harsh readout.
+- **De-harsh gain-reduction timeline** under the transport (server-computed GR
+  envelope, playhead synced to A/B) — shows the static floor + dynamic spikes
+  over the clip, so "is it engaging, and where?" is answerable at a glance.
+- **Spectral difference** strip (processed − original) below the spectrum —
+  the exact dB removed at each frequency; flat = doing nothing, deep dip = risk
+  of dulling.
 - **Process full track** commit → download, using the tuned settings.
+
+Still-optional viz not built: input spectrogram (to see whether the harshness
+is steady vs transient and how high it sits — informs the "move the 3–6 kHz
+band up?" question) and a graphical before/after loudness meter.
 
 Preview correctness: the de-harsh band reference and loudness gain are measured
 once on the whole track at upload and reused for every preview segment, so a

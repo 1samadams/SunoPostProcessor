@@ -71,12 +71,16 @@ aProc.addEventListener("timeupdate", () => {
     try { follow.currentTime = lead.currentTime; } catch (e) {}
   }
   const d = lead.duration || state.dur || 1;
-  $("scrub-fill").style.width = `${Math.min(100, (lead.currentTime / d) * 100)}%`;
+  const frac = Math.min(1, lead.currentTime / d);
+  $("scrub-fill").style.width = `${frac * 100}%`;
   $("time").textContent = fmtTime(lead.currentTime);
+  const ph = $("gr-playhead");
+  ph.style.left = `${frac * 100}%`; ph.classList.add("on");
 });
 function onEnded() {
   playing = false; $("play").innerHTML = "&#9658;";
   $("scrub-fill").style.width = "0%";
+  $("gr-playhead").classList.remove("on");
   try { aOrig.currentTime = 0; aProc.currentTime = 0; } catch (e) {}
 }
 aOrig.addEventListener("ended", onEnded);
@@ -233,7 +237,10 @@ async function runPreview(segmentChanged) {
     if (mySeq !== state.seq) return; // a newer request superseded this one
     state.lastSegKey = segKey;
     await applyPreview(data, needOriginal);
+    lastSpectrum = data.spectrum; lastGr = data.gr_series;
     drawSpectrum(data.spectrum);
+    drawSpectrumDiff(data.spectrum);
+    drawGRTimeline(data.gr_series);
     updateMetrics(data.metrics);
   } catch (err) {
     if (mySeq === state.seq) toast(err.message);
@@ -271,12 +278,14 @@ function updateMetrics(m) {
 }
 
 // ---------------------------------------------------------------------------
-// spectrum
+// spectrum + gain-reduction timeline + spectral difference
 // ---------------------------------------------------------------------------
+let lastSpectrum = null, lastGr = null;
+
 function drawSpectrum(spec) {
   const cv = $("spectrum");
   const dpr = window.devicePixelRatio || 1;
-  const W = cv.clientWidth || 640, H = 220;
+  const W = cv.clientWidth || 640, H = 200;
   cv.width = W * dpr; cv.height = H * dpr;
   const ctx = cv.getContext("2d"); ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, W, H);
@@ -321,6 +330,84 @@ function drawSpectrum(spec) {
   line(o, "#6b7280", 1.5, 0.9);
   line(p, "#22d3ee", 2, 1);
 }
+
+// exact dB removed/added at each frequency (processed − original)
+function drawSpectrumDiff(spec) {
+  const cv = $("specdiff");
+  const dpr = window.devicePixelRatio || 1;
+  const W = cv.clientWidth || 640, H = 70;
+  cv.width = W * dpr; cv.height = H * dpr;
+  const ctx = cv.getContext("2d"); ctx.scale(dpr, dpr); ctx.clearRect(0, 0, W, H);
+
+  const f = spec.freqs, fmin = f[0], fmax = f[f.length - 1];
+  const diff = spec.proc_db.map((v, i) => v - spec.orig_db[i]);
+  let mag = Math.min(12, Math.max(2, Math.ceil(Math.max(...diff.map(Math.abs)))));
+  const pad = 6;
+  const x = (fr) => pad + (Math.log10(fr) - Math.log10(fmin)) /
+    (Math.log10(fmax) - Math.log10(fmin)) * (W - 2 * pad);
+  const y = (d) => pad + (1 - (Math.max(-mag, Math.min(mag, d)) + mag) / (2 * mag)) * (H - 2 * pad);
+
+  const band = (lo, hi, c) => { ctx.fillStyle = c; ctx.fillRect(x(lo), pad, x(hi) - x(lo), H - 2 * pad); };
+  band(200, 400, "rgba(251,191,36,.10)");
+  band(3000, 6000, "rgba(124,92,255,.13)");
+
+  ctx.strokeStyle = "rgba(255,255,255,.18)"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(pad, y(0)); ctx.lineTo(W - pad, y(0)); ctx.stroke();
+  ctx.fillStyle = "rgba(255,255,255,.3)"; ctx.font = "9px system-ui";
+  ctx.fillText(`+${mag}`, 2, y(mag) + 8); ctx.fillText(`−${mag} dB`, 2, y(-mag) - 2);
+
+  ctx.beginPath();
+  for (let i = 0; i < f.length; i++) { const xx = x(f[i]), yy = y(diff[i]); i ? ctx.lineTo(xx, yy) : ctx.moveTo(xx, yy); }
+  ctx.lineTo(x(fmax), y(0)); ctx.lineTo(x(fmin), y(0)); ctx.closePath();
+  ctx.fillStyle = "rgba(251,191,36,.16)"; ctx.fill();
+  ctx.strokeStyle = "#fbbf24"; ctx.lineWidth = 2; ctx.beginPath();
+  for (let i = 0; i < f.length; i++) { const xx = x(f[i]), yy = y(diff[i]); i ? ctx.lineTo(xx, yy) : ctx.moveTo(xx, yy); }
+  ctx.stroke();
+}
+
+// de-harsh gain reduction (dB, <= 0) across the clip; playhead tracks playback
+function drawGRTimeline(series) {
+  const cv = $("grtl");
+  const dpr = window.devicePixelRatio || 1;
+  const W = cv.clientWidth || 640, H = 70;
+  cv.width = W * dpr; cv.height = H * dpr;
+  const ctx = cv.getContext("2d"); ctx.scale(dpr, dpr); ctx.clearRect(0, 0, W, H);
+
+  const n = series.length, pad = 6;
+  const range = Math.min(18, Math.max(6, Math.ceil(-Math.min(0, ...series))));
+  const x = (i) => pad + (i / (n - 1)) * (W - 2 * pad);
+  const y = (db) => pad + (-Math.max(-range, Math.min(0, db)) / range) * (H - 2 * pad);
+
+  ctx.strokeStyle = "rgba(255,255,255,.06)"; ctx.fillStyle = "rgba(255,255,255,.3)";
+  ctx.font = "9px system-ui"; ctx.lineWidth = 1;
+  for (let g = Math.max(3, Math.round(range / 3)); g < range; g += Math.max(3, Math.round(range / 3))) {
+    const yy = y(-g); ctx.beginPath(); ctx.moveTo(pad, yy); ctx.lineTo(W - pad, yy); ctx.stroke();
+    ctx.fillText(`−${g}`, 2, yy - 1);
+  }
+  ctx.strokeStyle = "rgba(255,255,255,.15)"; ctx.beginPath();
+  ctx.moveTo(pad, y(0)); ctx.lineTo(W - pad, y(0)); ctx.stroke();
+
+  ctx.beginPath(); ctx.moveTo(x(0), y(0));
+  for (let i = 0; i < n; i++) ctx.lineTo(x(i), y(series[i]));
+  ctx.lineTo(x(n - 1), y(0)); ctx.closePath();
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, "rgba(124,92,255,.12)"); grad.addColorStop(1, "rgba(124,92,255,.45)");
+  ctx.fillStyle = grad; ctx.fill();
+  ctx.strokeStyle = "#7c5cff"; ctx.lineWidth = 1.5; ctx.beginPath();
+  for (let i = 0; i < n; i++) { const xx = x(i), yy = y(series[i]); i ? ctx.lineTo(xx, yy) : ctx.moveTo(xx, yy); }
+  ctx.stroke();
+
+  $("gr-scale").textContent = `0 to −${range} dB`;
+}
+
+let _resizeT = null;
+window.addEventListener("resize", () => {
+  clearTimeout(_resizeT);
+  _resizeT = setTimeout(() => {
+    if (lastSpectrum) { drawSpectrum(lastSpectrum); drawSpectrumDiff(lastSpectrum); }
+    if (lastGr) drawGRTimeline(lastGr);
+  }, 150);
+});
 
 // ---------------------------------------------------------------------------
 // commit: full track

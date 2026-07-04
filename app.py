@@ -228,10 +228,14 @@ def preview():
     dh = dsp.deharsh_metrics(seg, sr, preset=preset, intensity=intensity,
                              threshold_pctl=threshold_pctl, ratio=ratio,
                              static_db=static_db, env_db_ref=env_ref)
+    gr_series = dsp.deharsh_gr_series(seg, sr, preset=preset, intensity=intensity,
+                                      threshold_pctl=threshold_pctl, ratio=ratio,
+                                      static_db=static_db, env_db_ref=env_ref)
 
     resp = {
         "processed_wav": _wav_data_uri(processed, sr),
         "spectrum": _spectrum_pair(original, processed, sr),
+        "gr_series": gr_series,
         "metrics": {
             "input_lufs": meta["input_lufs"],
             "target_lufs": -14.0,
