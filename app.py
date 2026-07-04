@@ -135,6 +135,91 @@ def _spectrogram(audio: np.ndarray, sr: int, n_time: int = 240, n_freq: int = 15
     }
 
 
+def _suggest_settings(audio: np.ndarray, sr: int, env_db_ref: np.ndarray) -> dict:
+    """Recommend de-harsh settings from the whole-track analysis.
+
+    Three signals drive it:
+      * brightness  = how loud the 3-6 kHz band is vs the mids (density, so
+                      bandwidth-fair). Referenced to a pink spectrum (~ -9 dB),
+                      it picks preset STRENGTH (Off / Gentle / Standard / Aggr).
+      * crest       = spread of the 3-6 kHz envelope (p95 - p50). Low = steady
+                      sheen (lean STATIC), high = transient sibilance (lean
+                      DYNAMIC). This is the static<->dynamic blend we otherwise
+                      had to find by ear.
+      * air_lean    = 6-10 kHz density minus 3-6 kHz density. If the top sits
+                      as loud or louder, the harshness is ABOVE the fixed band
+                      -> flag it (offer to widen), don't silently miss it.
+
+    Heuristic thresholds are transparent (the measured numbers ride along in
+    `reasons`) and default to Standard when unsure; the user can override.
+    """
+    mono = audio if audio.ndim == 1 else audio.mean(axis=1)
+    f, psd = signal.welch(mono, fs=sr, nperseg=int(min(8192, len(mono))))
+
+    def density_db(lo, hi):  # mean PSD in band (per-Hz, so bandwidth-fair)
+        sel = (f >= lo) & (f < min(hi, sr / 2.0))
+        return 10.0 * np.log10(float(psd[sel].mean()) + 1e-20) if sel.any() else -120.0
+
+    mid = density_db(200, 2000)
+    dh = density_db(3000, 6000)
+    air = density_db(6000, 10000)
+    brightness = float(dh - mid)          # vs pink ~ -9 dB
+    air_lean = float(air - dh)
+
+    if env_db_ref is not None and np.asarray(env_db_ref).size > 4:
+        crest = float(np.percentile(env_db_ref, 95) - np.percentile(env_db_ref, 50))
+    else:
+        crest = 8.0
+
+    reasons = []
+    if brightness < -13:
+        preset = "Off"
+        reasons.append(f"3-6 kHz already tame ({brightness:+.0f} dB vs mids)")
+    elif brightness < -10:
+        preset = "Gentle"
+        reasons.append(f"mild 3-6 kHz brightness ({brightness:+.0f} dB vs mids)")
+    elif brightness < -5:
+        preset = "Standard"
+        reasons.append(f"moderate 3-6 kHz brightness ({brightness:+.0f} dB vs mids)")
+    else:
+        preset = "Aggressive"
+        reasons.append(f"hot 3-6 kHz ({brightness:+.0f} dB vs mids)")
+
+    static_db = threshold_pctl = ratio = None
+    custom = False
+    if preset != "Off":
+        base = dsp.PRESETS[preset]
+        static_db, threshold_pctl, ratio = base["static_db"], base["pctl"], base["ratio"]
+        if crest < 6:            # steady sheen -> more static
+            static_db = round(max(-4.0, base["static_db"] * 1.6), 1)
+            custom = True
+            reasons.append(f"steady sheen (crest {crest:.0f} dB) -> more static cut")
+        elif crest > 12:         # transient -> lean dynamic
+            static_db = round(base["static_db"] * 0.5, 1)
+            custom = True
+            reasons.append(f"transient/spiky (crest {crest:.0f} dB) -> lean dynamic")
+        else:
+            reasons.append(f"mixed steady/transient (crest {crest:.0f} dB)")
+
+    band_note = None
+    if air_lean > -2.0:
+        band_note = (f"Most harsh energy sits above 6 kHz ({air_lean:+.0f} dB vs 3-6 kHz) "
+                     "— the fixed 3-6 kHz band may miss it; I can widen it if you want.")
+
+    return {
+        "preset": preset,
+        "intensity": 100,
+        "custom": custom,
+        "static_db": static_db,
+        "threshold_pctl": threshold_pctl,
+        "ratio": ratio,
+        "reasons": reasons,
+        "band_note": band_note,
+        "measured": {"brightness": round(brightness, 1), "crest": round(crest, 1),
+                     "air_lean": round(air_lean, 1)},
+    }
+
+
 def _controls_from_request(data: dict):
     """Parse preset / intensity / optional manual threshold+ratio."""
     preset = data.get("preset", "Standard")
@@ -226,7 +311,14 @@ def upload():
         app.logger.exception("spectrogram failed")
         spectrogram = None
 
-    return jsonify({"id": uid, "filename": upload.filename, "spectrogram": spectrogram, **meta})
+    try:
+        suggest = _suggest_settings(audio, sr, env_db_ref)
+    except Exception:  # noqa: BLE001 -- suggestion is optional, never fail upload
+        app.logger.exception("suggest failed")
+        suggest = None
+
+    return jsonify({"id": uid, "filename": upload.filename,
+                    "spectrogram": spectrogram, "suggest": suggest, **meta})
 
 
 def _read_segment(path: str, start_s: float, dur_s: float):

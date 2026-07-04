@@ -130,6 +130,7 @@ async function doUpload(file) {
     } else {
       specgram = null; $("specgram-card").classList.add("hidden");
     }
+    applySuggestion(data.suggest);   // auto-set controls from the analysis
     refreshPreview(true);
   } catch (err) {
     toast(err.message);
@@ -145,6 +146,7 @@ async function doUpload(file) {
 // ---------------------------------------------------------------------------
 $("presets").addEventListener("click", (e) => {
   const b = e.target.closest(".seg"); if (!b) return;
+  hideSuggest();
   state.preset = b.dataset.preset;
   [...$("presets").children].forEach((s) => s.dataset.active = s === b ? "1" : "0");
   // snap advanced sliders to preset, leave custom mode
@@ -169,6 +171,7 @@ $("durs").addEventListener("click", (e) => {
   refreshPreview(true);
 });
 $("intensity").addEventListener("input", (e) => {
+  hideSuggest();
   state.intensity = +e.target.value; $("intensity-val").textContent = `${state.intensity}%`;
   refreshPreview(false);
 });
@@ -177,10 +180,12 @@ $("start").addEventListener("input", (e) => {
   refreshPreview(true);
 });
 $("custom").addEventListener("change", (e) => {
+  hideSuggest();
   state.custom = e.target.checked; syncAdvancedDisabled(); markPresetModified(state.custom);
   refreshPreview(false);
 });
 function enterCustom() {
+  hideSuggest();
   if (!state.custom) { state.custom = true; $("custom").checked = true; syncAdvancedDisabled(); markPresetModified(true); }
 }
 $("static").addEventListener("input", (e) => {
@@ -211,6 +216,45 @@ function updateAdvancedLabels() {
 function markPresetModified(on) {
   [...$("presets").children].forEach((s) => s.classList.toggle("mod", on && s.dataset.active === "1"));
 }
+
+// ---------------------------------------------------------------------------
+// auto-suggest: apply the machine's picked settings + show why
+// ---------------------------------------------------------------------------
+function applySuggestion(sug) {
+  const banner = $("suggest");
+  if (!sug) { banner.classList.add("hidden"); return; }
+
+  state.preset = sug.preset;
+  [...$("presets").children].forEach((s) => s.dataset.active = s.dataset.preset === sug.preset ? "1" : "0");
+  state.intensity = sug.intensity;
+  $("intensity").value = sug.intensity; $("intensity-val").textContent = `${sug.intensity}%`;
+
+  const base = PRESET_BASE[sug.preset];
+  if (sug.custom && sug.static_db != null) {
+    state.custom = true; $("custom").checked = true;
+    state.static = sug.static_db; state.threshold = sug.threshold_pctl; state.ratio = sug.ratio;
+  } else {
+    state.custom = false; $("custom").checked = false;
+    if (base) { state.static = base.s; state.threshold = base.t; state.ratio = base.r; }
+  }
+  $("static").value = state.static; $("threshold").value = state.threshold; $("ratio").value = state.ratio;
+  updateAdvancedLabels(); syncAdvancedDisabled(); markPresetModified(sug.custom);
+
+  let extra = "";
+  if (sug.custom && base && sug.static_db != null) {
+    extra = sug.static_db < base.s - 0.3 ? " + extra static"
+      : sug.static_db > base.s + 0.3 ? " (leaner, more dynamic)" : "";
+  }
+  $("suggest-title").textContent = sug.preset === "Off"
+    ? "Auto: leave it — already clean" : `Auto-picked: ${sug.preset}${extra}`;
+  const ul = $("suggest-reasons"); ul.innerHTML = "";
+  (sug.reasons || []).forEach((r) => { const li = document.createElement("li"); li.textContent = r; ul.appendChild(li); });
+  const note = $("suggest-note");
+  if (sug.band_note) { note.textContent = "⚠ " + sug.band_note; note.classList.remove("hidden"); }
+  else note.classList.add("hidden");
+  banner.classList.remove("hidden");
+}
+const hideSuggest = () => $("suggest").classList.add("hidden");
 
 // ---------------------------------------------------------------------------
 // preview (debounced)

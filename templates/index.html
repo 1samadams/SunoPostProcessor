@@ -59,6 +59,13 @@
       <section class="panel card">
         <h2>De-harsh</h2>
 
+        <div id="suggest" class="suggest hidden">
+          <div class="suggest-top"><span class="suggest-badge">AUTO</span>
+            <span id="suggest-title">&mdash;</span></div>
+          <ul id="suggest-reasons" class="suggest-reasons"></ul>
+          <div id="suggest-note" class="suggest-note hidden"></div>
+        </div>
+
         <label class="lbl">Preset</label>
         <div id="presets" class="segmented">
           {% for p in presets %}
@@ -88,8 +95,8 @@
           </div>
           <p class="hint"><b>Static cut</b> = a gentle always-on reduction that
           tames steady "sheen" (set 0 for pure-dynamic). <b>Sensitivity/Ratio</b>
-          = the dynamic spike-catch for transient sibilance. Presets are
-          unvalidated starting points &mdash; tune by ear, then we lock them.</p>
+          = the dynamic spike-catch for transient sibilance. The presets are
+          sensible defaults &mdash; only reach in here if a track needs it.</p>
         </details>
 
         <hr>

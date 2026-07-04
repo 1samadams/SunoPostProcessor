@@ -90,9 +90,10 @@ aren't stuck between two presets. The **Advanced** panel exposes the static cut
 (dB), percentile ("Sensitivity") and ratio directly for ear-tuning; set static
 to 0 dB for a purely-dynamic cut.
 
-**Important:** these percentile/ratio numbers are starting points, not gospel.
-They need tuning by ear against real Suno exports before trusting "Standard"
-as a true default — treat the table as the first draft to test.
+These values are the accepted working defaults (checked against real Suno
+exports with the visualizers — steady sheen confirmed, so the static blend
+carries the load). Not sacred: the Advanced panel retunes per-track by ear, and
+if a systematic bias shows up on more material, revisit the table.
 
 ## Web UI requirements
 
@@ -118,6 +119,17 @@ off short **10 / 15 / 30 s** clips with a start-position scrubber:
   panel that hand-tunes threshold & ratio directly (this is the ear-tuning
   surface — kept behind a disclosure so the default view stays at 4 presets,
   no decision fatigue). Steps 2 & 3 stay automatic, no controls.
+- **Auto-suggest** (for when you'd rather not judge by ear): at upload the
+  server analyses the whole track and picks a starting point, auto-applied with
+  the reasoning shown in a banner. It decides (a) preset strength from 3–6 kHz
+  brightness vs the mids (density-based, pink-referenced), (b) the
+  static↔dynamic lean from the 3–6 kHz envelope **crest** (steady sheen → more
+  static; transient sibilance → lean dynamic — the blend we otherwise found by
+  ear), (c) Off when the band is already clean, and (d) flags when the harsh
+  energy sits **above 6 kHz** (band may miss it — offer to widen). Heuristic
+  thresholds are transparent (measured numbers ride in the reasons) and default
+  to Standard when unsure; any manual control change dismisses the banner. The
+  suggestion is level/analysis-only — it never overrides a choice you make.
 - **Gapless A/B**: original and processed clips play in sync; a toggle gates
   which you hear. The original is level-matched (same loudness gain + ceiling,
   no EQ) so the A/B is honest — only the de-harsh/mud differ, not level.
@@ -161,8 +173,8 @@ settings between runs.
   plus flask + gunicorn for the web/deploy layer.
 
 ## Known open questions (flag these back to the user, don't silently decide)
-- Exact threshold/ratio values per preset need ear-tuning against real
-  exports — treat current values as placeholders.
+- Preset values are the accepted defaults now (not placeholders). Revisit only
+  if a systematic bias shows up across more real exports.
 - Whether envelope follower should be peak or RMS-based may need A/B testing
   on actual cymbal-heavy vs vocal-heavy tracks.
 - **De-harsh band is fixed at 3–6 kHz, but measured real "air"/sibilance
