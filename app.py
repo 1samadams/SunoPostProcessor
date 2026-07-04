@@ -97,6 +97,44 @@ def _spectrum_pair(orig: np.ndarray, proc: np.ndarray, sr: int):
     }
 
 
+def _spectrogram(audio: np.ndarray, sr: int, n_time: int = 240, n_freq: int = 150,
+                 fmin: float = 40.0) -> dict:
+    """Whole-track magnitude spectrogram as a uint8 heatmap (base64).
+
+    Log-frequency y-axis (fmin..~16 kHz) so the 3-6 kHz band and the "air"
+    region above it are both visible; time binned to n_time columns. 70 dB
+    display range. Returned row-major, freq-major, low freq first.
+    """
+    mono = audio if audio.ndim == 1 else audio.mean(axis=1)
+    fmax = min(16000.0, sr / 2.0 * 0.98)
+    nperseg = 1024
+    hop = int(min(nperseg, max(256, len(mono) // 4000)))  # bound frame count
+    f, _t, sxx = signal.spectrogram(mono, fs=sr, nperseg=nperseg,
+                                    noverlap=nperseg - hop, mode="magnitude")
+    nt = sxx.shape[1]
+    edges = np.linspace(0, nt, n_time + 1).astype(int)
+    binned = np.empty((sxx.shape[0], n_time))
+    for j in range(n_time):
+        a, b = edges[j], edges[j + 1]
+        binned[:, j] = sxx[:, a:b].mean(axis=1) if b > a else sxx[:, min(a, nt - 1)]
+    db = 20.0 * np.log10(binned + 1e-9)
+
+    logf = np.geomspace(fmin, fmax, n_freq)
+    grid = np.empty((n_freq, n_time))
+    for j in range(n_time):
+        grid[:, j] = np.interp(logf, f, db[:, j])
+
+    mx = float(grid.max())
+    floor = mx - 70.0
+    norm = np.clip((grid - floor) / max(1e-6, mx - floor), 0.0, 1.0)
+    u8 = (norm * 255.0).astype(np.uint8)
+    return {
+        "n_time": n_time, "n_freq": n_freq,
+        "fmin": round(float(fmin), 1), "fmax": round(float(fmax), 1),
+        "data": base64.b64encode(u8.tobytes()).decode("ascii"),
+    }
+
+
 def _controls_from_request(data: dict):
     """Parse preset / intensity / optional manual threshold+ratio."""
     preset = data.get("preset", "Standard")
@@ -182,7 +220,13 @@ def upload():
         "gain_lufs": None if not np.isfinite(gain_lufs) else float(gain_lufs),
     })
 
-    return jsonify({"id": uid, "filename": upload.filename, **meta})
+    try:
+        spectrogram = _spectrogram(audio, sr)
+    except Exception:  # noqa: BLE001 -- viz is optional, never fail the upload
+        app.logger.exception("spectrogram failed")
+        spectrogram = None
+
+    return jsonify({"id": uid, "filename": upload.filename, "spectrogram": spectrogram, **meta})
 
 
 def _read_segment(path: str, start_s: float, dur_s: float):

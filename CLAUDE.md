@@ -130,11 +130,14 @@ off short **10 / 15 / 30 s** clips with a start-position scrubber:
 - **Spectral difference** strip (processed − original) below the spectrum —
   the exact dB removed at each frequency; flat = doing nothing, deep dip = risk
   of dulling.
+- **Whole-track spectrogram** ("harshness map", full-width, computed once at
+  upload) — a magma heatmap with a log-frequency axis and the 3–6 kHz band
+  marked, so you can see whether the harshness is steady vs bursty and *how
+  high it sits* (informs the open "move the band up?" question).
+- **Graphical loudness/true-peak meter** — gauges for input → −14 LUFS and the
+  processed peak vs the −1 dBTP ceiling (the before/after meter the spec asks
+  for).
 - **Process full track** commit → download, using the tuned settings.
-
-Still-optional viz not built: input spectrogram (to see whether the harshness
-is steady vs transient and how high it sits — informs the "move the 3–6 kHz
-band up?" question) and a graphical before/after loudness meter.
 
 Preview correctness: the de-harsh band reference and loudness gain are measured
 once on the whole track at upload and reused for every preview segment, so a

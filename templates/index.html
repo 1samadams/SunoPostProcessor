@@ -41,6 +41,18 @@
       <button type="button" id="change" class="ghost">Change file</button>
     </div>
 
+    <!-- whole-track spectrogram (harshness map) -->
+    <section id="specgram-card" class="specgram card hidden">
+      <div class="sg-head">
+        <h2>Harshness map &mdash; whole track</h2>
+        <span class="muted">brighter = more energy &middot; is the 3&ndash;6&nbsp;kHz band (or above) lit up, steady or in bursts?</span>
+      </div>
+      <div class="sg-wrap">
+        <canvas id="specgram" width="960" height="200"></canvas>
+        <div class="sg-yaxis" id="sg-yaxis"></div>
+      </div>
+    </section>
+
     <div class="grid">
 
       <!-- controls -->
@@ -127,6 +139,28 @@
           <div class="meter"><span class="m-label">Target</span><span id="m-target" class="m-val">&minus;14</span><span class="m-unit">LUFS</span></div>
           <div class="meter"><span class="m-label">True peak</span><span id="m-tp" class="m-val">&ndash;</span><span class="m-unit">dBTP</span></div>
           <div class="meter"><span class="m-label">De-harsh</span><span id="m-dh" class="m-val">&ndash;</span><span class="m-unit">dB peak</span></div>
+        </div>
+
+        <!-- graphical before/after loudness + true-peak meter -->
+        <div class="loud">
+          <div class="loud-row">
+            <span class="loud-lab">LUFS</span>
+            <div class="gauge">
+              <div class="gauge-fill" id="lufs-fill"></div>
+              <div class="gauge-tick" id="lufs-target"></div>
+              <div class="gauge-dot" id="lufs-in" title="input"></div>
+            </div>
+            <span class="loud-val" id="lufs-txt">&ndash;</span>
+          </div>
+          <div class="loud-row">
+            <span class="loud-lab">Peak</span>
+            <div class="gauge">
+              <div class="gauge-fill tp" id="tp-fill"></div>
+              <div class="gauge-tick ceil" id="tp-ceil"></div>
+            </div>
+            <span class="loud-val" id="tp2-txt">&ndash;</span>
+          </div>
+          <div class="loud-legend"><span id="loud-note" class="muted">input &rarr; &minus;14 LUFS target, ceiling &minus;1 dBTP</span></div>
         </div>
 
         <div class="spectrum-wrap">
