@@ -59,6 +59,13 @@
       <section class="panel card">
         <h2>De-harsh</h2>
 
+        <div id="suggest" class="suggest hidden">
+          <div class="suggest-top"><span class="suggest-badge">AUTO</span>
+            <span id="suggest-title">&mdash;</span></div>
+          <ul id="suggest-reasons" class="suggest-reasons"></ul>
+          <div id="suggest-note" class="suggest-note hidden"></div>
+        </div>
+
         <label class="lbl">Preset</label>
         <div id="presets" class="segmented">
           {% for p in presets %}
