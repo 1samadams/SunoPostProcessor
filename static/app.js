@@ -12,6 +12,7 @@ const state = {
   id: null, filename: null, sr: 0, duration: 0, channels: 1, inputLufs: null,
   preset: "Standard", intensity: 100,
   custom: false, threshold: 91, ratio: 3, static: -1.5,
+  band: [3000, 6000],   // adaptive de-harsh band (smart tuner picks it)
   dur: 10, start: 0,
   lastSegKey: null, seq: 0,
 };
@@ -123,6 +124,8 @@ async function doUpload(file) {
     $("start").max = Math.max(0, data.duration - state.dur).toFixed(1);
     $("start").value = 0; $("start-val").textContent = "0:00";
     $("workspace").classList.remove("hidden");
+    renderWarnings(data.warnings);
+    applySuggestion(data.suggest);   // sets state.band before we draw the map
     if (data.spectrogram) {
       specgram = decodeSpectrogram(data.spectrogram);
       $("specgram-card").classList.remove("hidden");
@@ -130,7 +133,6 @@ async function doUpload(file) {
     } else {
       specgram = null; $("specgram-card").classList.add("hidden");
     }
-    applySuggestion(data.suggest);   // auto-set controls from the analysis
     refreshPreview(true);
   } catch (err) {
     toast(err.message);
@@ -224,6 +226,7 @@ function applySuggestion(sug) {
   const banner = $("suggest");
   if (!sug) { banner.classList.add("hidden"); return; }
 
+  if (sug.band) state.band = sug.band;            // adaptive de-harsh band
   state.preset = sug.preset;
   [...$("presets").children].forEach((s) => s.dataset.active = s.dataset.preset === sug.preset ? "1" : "0");
   state.intensity = sug.intensity;
@@ -240,6 +243,13 @@ function applySuggestion(sug) {
   $("static").value = state.static; $("threshold").value = state.threshold; $("ratio").value = state.ratio;
   updateAdvancedLabels(); syncAdvancedDisabled(); markPresetModified(sug.custom);
 
+  // auto-jump the preview to where the harshness actually lives
+  if (sug.harsh_start != null) {
+    const max = Math.max(0, state.duration - state.dur);
+    state.start = Math.min(sug.harsh_start, max);
+    $("start").value = state.start; $("start-val").textContent = fmtTime(state.start);
+  }
+
   let extra = "";
   if (sug.custom && base && sug.static_db != null) {
     extra = sug.static_db < base.s - 0.3 ? " + extra static"
@@ -247,6 +257,13 @@ function applySuggestion(sug) {
   }
   $("suggest-title").textContent = sug.preset === "Off"
     ? "Auto: leave it — already clean" : `Auto-picked: ${sug.preset}${extra}`;
+  const conf = $("suggest-conf");
+  conf.classList.toggle("hidden", sug.confidence !== "borderline");
+  const parts = [];
+  if (sug.band_display && sug.preset !== "Off") parts.push(`targeting ${sug.band_display}`);
+  if (sug.mud_db != null) parts.push(`mud ${sug.mud_db} dB`);
+  if (sug.harsh_start) parts.push(`preview @ ${fmtTime(sug.harsh_start)}`);
+  $("suggest-sub").textContent = parts.join(" · ");
   const ul = $("suggest-reasons"); ul.innerHTML = "";
   (sug.reasons || []).forEach((r) => { const li = document.createElement("li"); li.textContent = r; ul.appendChild(li); });
   const note = $("suggest-note");
@@ -255,6 +272,14 @@ function applySuggestion(sug) {
   banner.classList.remove("hidden");
 }
 const hideSuggest = () => $("suggest").classList.add("hidden");
+
+function renderWarnings(warnings) {
+  const el = $("warnings");
+  if (!warnings || !warnings.length) { el.classList.add("hidden"); el.innerHTML = ""; return; }
+  el.innerHTML = '<div class="w-head">Heads up</div><ul>'
+    + warnings.map((w) => `<li>${w.replace(/</g, "&lt;")}</li>`).join("") + "</ul>";
+  el.classList.remove("hidden");
+}
 
 // ---------------------------------------------------------------------------
 // preview (debounced)
@@ -288,6 +313,7 @@ async function runPreview(segmentChanged) {
     if (mySeq !== state.seq) return; // a newer request superseded this one
     state.lastSegKey = segKey;
     await applyPreview(data, needOriginal);
+    if (data.band) state.band = data.band;   // keep highlight synced to server
     lastSpectrum = data.spectrum; lastGr = data.gr_series;
     drawSpectrum(data.spectrum);
     drawSpectrumDiff(data.spectrum);
@@ -358,7 +384,7 @@ function drawSpectrum(spec) {
     ctx.fillRect(x(lo), pad, x(hi) - x(lo), H - 2 * pad);
   };
   band(200, 400, "rgba(251,191,36,.10)");
-  band(3000, 6000, "rgba(124,92,255,.13)");
+  band(state.band[0], state.band[1], "rgba(124,92,255,.13)");
 
   // gridlines
   ctx.strokeStyle = "rgba(255,255,255,.06)"; ctx.fillStyle = "rgba(255,255,255,.35)";
@@ -401,7 +427,7 @@ function drawSpectrumDiff(spec) {
 
   const band = (lo, hi, c) => { ctx.fillStyle = c; ctx.fillRect(x(lo), pad, x(hi) - x(lo), H - 2 * pad); };
   band(200, 400, "rgba(251,191,36,.10)");
-  band(3000, 6000, "rgba(124,92,255,.13)");
+  band(state.band[0], state.band[1], "rgba(124,92,255,.13)");
 
   ctx.strokeStyle = "rgba(255,255,255,.18)"; ctx.lineWidth = 1;
   ctx.beginPath(); ctx.moveTo(pad, y(0)); ctx.lineTo(W - pad, y(0)); ctx.stroke();
@@ -496,10 +522,11 @@ function drawSpectrogram(sg) {
 
   const lo = Math.log10(sg.fmin), hi = Math.log10(sg.fmax);
   const yOf = (fr) => (1 - (Math.log10(fr) - lo) / (hi - lo)) * H;
+  const [bLo, bHi] = state.band;
   ctx.fillStyle = "rgba(124,92,255,.16)";
-  ctx.fillRect(0, yOf(6000), W, yOf(3000) - yOf(6000));           // 3-6 kHz band
+  ctx.fillRect(0, yOf(bHi), W, yOf(bLo) - yOf(bHi));             // targeted de-harsh band
   ctx.strokeStyle = "rgba(124,92,255,.55)"; ctx.lineWidth = 1;
-  [3000, 6000].forEach((fr) => { const y = yOf(fr); ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); });
+  [bLo, bHi].forEach((fr) => { const y = yOf(fr); ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); });
 
   const ax = $("sg-yaxis"); ax.innerHTML = "";
   [100, 1000, 3000, 6000, 10000].forEach((fr) => {

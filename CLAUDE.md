@@ -16,7 +16,10 @@ specific, well-understood problems with AI-generated mixes:
    steady sheen — without the heavy dulling a fixed static notch caused. See
    the de-harsh architecture note and the Presets table below.
 2. **Low-mid mud (200–400 Hz)** — static, gentle, wide-Q cut. 1–2 dB. Never
-   more than 3 dB (throws away warmth). No dynamics needed here.
+   more than 3 dB (throws away warmth). No dynamics needed here. The smart
+   tuner now sets the depth per track from the actual 200–400 Hz buildup
+   (0.5–3 dB); it stays automatic (no user control), just no longer a fixed
+   −1.5 dB.
 3. **Loudness normalization** — Suno exports land anywhere from -9 to -16
    LUFS integrated, inconsistently. Target: **-14 LUFS integrated, -1 dBTP
    true-peak ceiling** (Spotify's normalization target). This is
@@ -119,17 +122,31 @@ off short **10 / 15 / 30 s** clips with a start-position scrubber:
   panel that hand-tunes threshold & ratio directly (this is the ear-tuning
   surface — kept behind a disclosure so the default view stays at 4 presets,
   no decision fatigue). Steps 2 & 3 stay automatic, no controls.
-- **Auto-suggest** (for when you'd rather not judge by ear): at upload the
-  server analyses the whole track and picks a starting point, auto-applied with
-  the reasoning shown in a banner. It decides (a) preset strength from 3–6 kHz
-  brightness vs the mids (density-based, pink-referenced), (b) the
-  static↔dynamic lean from the 3–6 kHz envelope **crest** (steady sheen → more
-  static; transient sibilance → lean dynamic — the blend we otherwise found by
-  ear), (c) Off when the band is already clean, and (d) flags when the harsh
-  energy sits **above 6 kHz** (band may miss it — offer to widen). Heuristic
-  thresholds are transparent (measured numbers ride in the reasons) and default
-  to Standard when unsure; any manual control change dismisses the banner. The
-  suggestion is level/analysis-only — it never overrides a choice you make.
+- **Smart tuner / auto-suggest** (for when you'd rather not judge by ear): at
+  upload the server analyses the whole track (`_analyze`), auto-applies a
+  starting point, and shows the reasoning in a banner. It decides:
+  - **Where** — adaptive de-harsh **band**: fits a smooth spectral trend and
+    targets the frequency that pokes above it most (the resonance), banding
+    ~±½-octave around it. So harshness at 8 kHz gets de-harshed at ~5–10 kHz,
+    not missed by a fixed 3–6 kHz band. The band is a *track property* held
+    server-side (in the upload record) and reused by preview/process; it's not
+    a user control. Falls back to 3–6 kHz when there's no distinct resonance.
+  - **How much** — preset **strength** from band brightness vs mids (density,
+    pink-referenced), and the **static↔dynamic lean** from the band envelope
+    **crest** (low = steady sheen → more static; high = transient → lean
+    dynamic). **Off** when the band is already tame.
+  - **Mud depth** — adaptive from the 200–400 Hz buildup (0.5–3 dB), also a
+    server-side track property.
+  - **When** — finds the loudest sustained band moment and **auto-jumps the
+    preview scrubber there** so the A/B lands on the worst of it.
+  - **Confidence** — flags borderline calls (within ~1.2 dB of a preset
+    boundary) so you know to A/B the neighbour.
+  - **Input health** (`_input_health`) — separate amber warnings for source
+    clipping / TP > 0, DC offset, already-brick-walled material, and a loudness
+    forecast when a peaky track will land under −14.
+  Heuristic thresholds are transparent (measured numbers ride in the reasons)
+  and default to Standard when unsure; any manual control change dismisses the
+  banner. The tuner never overrides a choice you make.
 - **Gapless A/B**: original and processed clips play in sync; a toggle gates
   which you hear. The original is level-matched (same loudness gain + ceiling,
   no EQ) so the A/B is honest — only the de-harsh/mud differ, not level.
@@ -177,11 +194,14 @@ settings between runs.
   if a systematic bias shows up across more real exports.
 - Whether envelope follower should be peak or RMS-based may need A/B testing
   on actual cymbal-heavy vs vocal-heavy tracks.
-- **De-harsh band is fixed at 3–6 kHz, but measured real "air"/sibilance
-  harshness often sits higher (6–10 kHz+).** If ear-testing shows the sizzle
-  lives above 6 kHz, revisit the band (widen or shift up) — don't change it
-  silently; it's an architecture decision. The band edges auto-clamp under
-  Nyquist so low-sr files don't crash (de-harsh just narrows/bypasses).
+- **De-harsh band is now ADAPTIVE** (was fixed 3–6 kHz). The smart tuner
+  detects the resonance frequency and targets ~±½-octave around it, so
+  harshness above 6 kHz is handled rather than missed. It's a server-side
+  track property, not exposed as a control; falls back to 3–6 kHz when no
+  distinct resonance is found. The DSP path takes an explicit `band=(lo,hi)`
+  (defaulting to 3–6 kHz) and auto-clamps the top edge under Nyquist so low-sr
+  files don't crash. Open sub-question: whether to also expose a manual band
+  override in Advanced for ear-tuners (not built — auto has covered it so far).
 - **Loudness on high-crest material lands slightly under −14 LUFS** (~0.5 dB on
   very peaky tracks) because the true-peak ceiling is honoured without
   crushing transients. This is the intended "normalize, don't limit-for-
