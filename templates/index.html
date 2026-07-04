@@ -41,6 +41,9 @@
       <button type="button" id="change" class="ghost">Change file</button>
     </div>
 
+    <!-- input health warnings -->
+    <div id="warnings" class="warnings card hidden"></div>
+
     <!-- whole-track spectrogram (harshness map) -->
     <section id="specgram-card" class="specgram card hidden">
       <div class="sg-head">
@@ -61,7 +64,9 @@
 
         <div id="suggest" class="suggest hidden">
           <div class="suggest-top"><span class="suggest-badge">AUTO</span>
-            <span id="suggest-title">&mdash;</span></div>
+            <span id="suggest-title">&mdash;</span>
+            <span id="suggest-conf" class="suggest-conf hidden">borderline</span></div>
+          <div id="suggest-sub" class="suggest-sub"></div>
           <ul id="suggest-reasons" class="suggest-reasons"></ul>
           <div id="suggest-note" class="suggest-note hidden"></div>
         </div>

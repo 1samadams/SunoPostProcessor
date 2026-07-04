@@ -135,89 +135,163 @@ def _spectrogram(audio: np.ndarray, sr: int, n_time: int = 240, n_freq: int = 15
     }
 
 
-def _suggest_settings(audio: np.ndarray, sr: int, env_db_ref: np.ndarray) -> dict:
-    """Recommend de-harsh settings from the whole-track analysis.
+_DEFAULT_BAND = (3000.0, 6000.0)
 
-    Three signals drive it:
-      * brightness  = how loud the 3-6 kHz band is vs the mids (density, so
-                      bandwidth-fair). Referenced to a pink spectrum (~ -9 dB),
-                      it picks preset STRENGTH (Off / Gentle / Standard / Aggr).
-      * crest       = spread of the 3-6 kHz envelope (p95 - p50). Low = steady
-                      sheen (lean STATIC), high = transient sibilance (lean
-                      DYNAMIC). This is the static<->dynamic blend we otherwise
-                      had to find by ear.
-      * air_lean    = 6-10 kHz density minus 3-6 kHz density. If the top sits
-                      as loud or louder, the harshness is ABOVE the fixed band
-                      -> flag it (offer to widen), don't silently miss it.
 
-    Heuristic thresholds are transparent (the measured numbers ride along in
-    `reasons`) and default to Standard when unsure; the user can override.
+def _detect_band(f: np.ndarray, psd: np.ndarray, sr: int):
+    """Find where the harshness actually sits and return a band to target.
+
+    Fits a smooth spectral trend (2nd-order in log-freq) and looks for the
+    frequency where the spectrum pokes *above* the trend the most in 2.5-12 kHz
+    -- the resonance / sheen. Bands the region ~+/- half-octave around it. Falls
+    back to the default 3-6 kHz when there's no distinct excess (broadband).
+    Returns (band, f0, height_db).
+    """
+    fmax = min(12000.0, 0.95 * sr / 2.0)
+    sel = (f >= 1000.0) & (f <= fmax)
+    if sel.sum() < 8:
+        return _DEFAULT_BAND, None, 0.0
+    ff, pp = f[sel], 10.0 * np.log10(psd[sel] + 1e-20)
+    logf = np.log10(ff)
+    trend = np.polyval(np.polyfit(logf, pp, 2), logf)
+    excess = np.clip(pp - trend, 0.0, None)
+
+    reg = ff >= 2500.0
+    if not reg.any() or float(excess[reg].max()) < 1.2:
+        return _DEFAULT_BAND, None, float(excess[reg].max()) if reg.any() else 0.0
+
+    idx = np.where(reg)[0]
+    pk = idx[int(np.argmax(excess[idx]))]
+    f0, h = float(ff[pk]), float(excess[pk])
+    lo, hi = f0 / 1.5, f0 * 1.5
+    lo, hi = max(2000.0, lo), min(fmax, hi)
+    if hi - lo < 1500.0:
+        c = (lo + hi) / 2.0; lo, hi = max(2000.0, c - 900.0), c + 900.0
+    if hi - lo > 5000.0:
+        lo, hi = max(2000.0, f0 - 2500.0), min(fmax, f0 + 2500.0)
+    return (round(lo / 50) * 50.0, round(hi / 50) * 50.0), f0, h
+
+
+def _detect_mud(f: np.ndarray, psd: np.ndarray) -> float:
+    """Mud-cut depth (dB, <= 0) from how much 200-400 Hz pokes above neighbours."""
+    def dens(lo, hi):
+        sel = (f >= lo) & (f < hi)
+        return 10.0 * np.log10(float(psd[sel].mean()) + 1e-20) if sel.any() else -120.0
+    excess = dens(200, 400) - 0.5 * (dens(100, 200) + dens(400, 800))
+    return -round(min(3.0, max(0.5, 1.0 + max(0.0, excess) * 0.5)), 1)
+
+
+def _harsh_start(env_db_ref: np.ndarray, duration: float) -> float:
+    """Time (s) of the loudest sustained band energy, minus a lead-in -- where
+    the preview scrubber should land so you hear the worst of it."""
+    e = np.asarray(env_db_ref, dtype=float)
+    if e.size < 20 or duration <= 0:
+        return 0.0
+    win = max(1, min(e.size // 4, 500))
+    sm = np.convolve(e, np.ones(win) / win, mode="same")
+    m = int(e.size * 0.05)
+    seg = sm[m:e.size - m] if e.size - 2 * m > 4 else sm
+    idx = m + int(np.argmax(seg)) if e.size - 2 * m > 4 else int(np.argmax(sm))
+    return round(max(0.0, (idx / e.size) * duration - 3.0), 1)
+
+
+def _analyze(audio: np.ndarray, sr: int, duration: float):
+    """Full smart-tuner analysis. Returns (band, mud_gain, env_db_ref, dict).
+
+    Decides: WHERE (adaptive band from the resonance), the low-mid mud depth,
+    the preset STRENGTH (brightness in the *targeted* band vs mids), the
+    static<->dynamic LEAN (envelope crest), a CONFIDENCE flag when borderline,
+    and where the harshness lives in time (preview start).
     """
     mono = audio if audio.ndim == 1 else audio.mean(axis=1)
     f, psd = signal.welch(mono, fs=sr, nperseg=int(min(8192, len(mono))))
 
-    def density_db(lo, hi):  # mean PSD in band (per-Hz, so bandwidth-fair)
+    band, f0, res_h = _detect_band(f, psd, sr)
+    mud_gain = _detect_mud(f, psd)
+    env_db_ref = dsp.band_envelope_db(audio, sr, band=band)
+    harsh_start = _harsh_start(env_db_ref, duration)
+
+    def dens(lo, hi):
         sel = (f >= lo) & (f < min(hi, sr / 2.0))
         return 10.0 * np.log10(float(psd[sel].mean()) + 1e-20) if sel.any() else -120.0
 
-    mid = density_db(200, 2000)
-    dh = density_db(3000, 6000)
-    air = density_db(6000, 10000)
-    brightness = float(dh - mid)          # vs pink ~ -9 dB
-    air_lean = float(air - dh)
+    brightness = float(dens(band[0], band[1]) - dens(200, 2000))
+    crest = (float(np.percentile(env_db_ref, 95) - np.percentile(env_db_ref, 50))
+             if np.asarray(env_db_ref).size > 4 else 8.0)
 
-    if env_db_ref is not None and np.asarray(env_db_ref).size > 4:
-        crest = float(np.percentile(env_db_ref, 95) - np.percentile(env_db_ref, 50))
-    else:
-        crest = 8.0
+    # preset STRENGTH from brightness (pink-referenced boundaries)
+    bounds = [(-13, "Off"), (-10, "Gentle"), (-5, "Standard"), (1e9, "Aggressive")]
+    preset = next(name for thr, name in bounds if brightness < thr)
+    reasons = [("band already tame" if preset == "Off" else
+                {"Gentle": "mild", "Standard": "moderate", "Aggressive": "hot"}[preset]
+                + f" band energy ({brightness:+.0f} dB vs mids)")]
 
-    reasons = []
-    if brightness < -13:
-        preset = "Off"
-        reasons.append(f"3-6 kHz already tame ({brightness:+.0f} dB vs mids)")
-    elif brightness < -10:
-        preset = "Gentle"
-        reasons.append(f"mild 3-6 kHz brightness ({brightness:+.0f} dB vs mids)")
-    elif brightness < -5:
-        preset = "Standard"
-        reasons.append(f"moderate 3-6 kHz brightness ({brightness:+.0f} dB vs mids)")
-    else:
-        preset = "Aggressive"
-        reasons.append(f"hot 3-6 kHz ({brightness:+.0f} dB vs mids)")
+    # CONFIDENCE: flag when brightness sits within 1.2 dB of a boundary
+    confidence = "high"
+    for thr, _ in bounds[:-1]:
+        if abs(brightness - thr) < 1.2:
+            confidence = "borderline"
+            reasons.append("borderline call — worth A/B-ing the neighbouring preset")
+            break
 
     static_db = threshold_pctl = ratio = None
     custom = False
     if preset != "Off":
         base = dsp.PRESETS[preset]
         static_db, threshold_pctl, ratio = base["static_db"], base["pctl"], base["ratio"]
-        if crest < 6:            # steady sheen -> more static
-            static_db = round(max(-4.0, base["static_db"] * 1.6), 1)
-            custom = True
-            reasons.append(f"steady sheen (crest {crest:.0f} dB) -> more static cut")
-        elif crest > 12:         # transient -> lean dynamic
-            static_db = round(base["static_db"] * 0.5, 1)
-            custom = True
-            reasons.append(f"transient/spiky (crest {crest:.0f} dB) -> lean dynamic")
+        if crest < 6:
+            static_db = round(max(-4.0, base["static_db"] * 1.6), 1); custom = True
+            reasons.append(f"steady sheen (crest {crest:.0f} dB) → more static cut")
+        elif crest > 12:
+            static_db = round(base["static_db"] * 0.5, 1); custom = True
+            reasons.append(f"transient/spiky (crest {crest:.0f} dB) → lean dynamic")
         else:
             reasons.append(f"mixed steady/transient (crest {crest:.0f} dB)")
 
     band_note = None
-    if air_lean > -2.0:
-        band_note = (f"Most harsh energy sits above 6 kHz ({air_lean:+.0f} dB vs 3-6 kHz) "
-                     "— the fixed 3-6 kHz band may miss it; I can widen it if you want.")
+    shifted = band != _DEFAULT_BAND
+    if shifted and preset != "Off":
+        band_note = (f"Harshness centred ~{(f0 or (band[0]+band[1])/2)/1000:.1f} kHz "
+                     f"({res_h:.0f} dB over trend) — targeting {band[0]/1000:.1f}"
+                     f"–{band[1]/1000:.1f} kHz instead of the usual 3–6 kHz.")
 
-    return {
-        "preset": preset,
-        "intensity": 100,
-        "custom": custom,
-        "static_db": static_db,
-        "threshold_pctl": threshold_pctl,
-        "ratio": ratio,
-        "reasons": reasons,
-        "band_note": band_note,
-        "measured": {"brightness": round(brightness, 1), "crest": round(crest, 1),
-                     "air_lean": round(air_lean, 1)},
+    suggest = {
+        "preset": preset, "intensity": 100, "custom": custom,
+        "static_db": static_db, "threshold_pctl": threshold_pctl, "ratio": ratio,
+        "reasons": reasons, "band_note": band_note, "confidence": confidence,
+        "band": [round(band[0], 1), round(band[1], 1)],
+        "band_display": f"{band[0]/1000:.1f}–{band[1]/1000:.1f} kHz",
+        "mud_db": mud_gain, "harsh_start": harsh_start,
+        "measured": {"brightness": round(brightness, 1), "crest": round(crest, 1)},
     }
+    return band, mud_gain, env_db_ref, suggest
+
+
+def _input_health(audio: np.ndarray, sr: int, input_lufs, input_tp: float) -> list:
+    """Advisory warnings about the *source* file (#4) + loudness forecast (#5)."""
+    warnings = []
+    peak = float(np.max(np.abs(audio)))
+    if input_tp > 0.0 or peak >= 0.999:
+        n_hot = int(np.sum(np.abs(audio) >= 0.999))
+        warnings.append(f"Source already clips (true peak {input_tp:+.1f} dBFS"
+                        + (f", {n_hot} samples at full scale" if n_hot else "")
+                        + ") — de-harsh can't undo clipping.")
+    dc = float(np.mean(audio))
+    if abs(dc) > 0.003:
+        warnings.append(f"DC offset detected ({dc:+.3f}); a high-pass would fix it.")
+    if input_lufs is not None:
+        rms = 20.0 * np.log10(float(np.sqrt(np.mean(audio ** 2))) + 1e-12)
+        peak_db = 20.0 * np.log10(peak + 1e-12)
+        crest_db = peak_db - rms
+        if input_lufs > -10.0 and crest_db < 9.0:
+            warnings.append(f"Looks already loudness-maximised ({input_lufs:.0f} LUFS, "
+                            f"crest {crest_db:.0f} dB) — likely brick-walled; de-harsh only.")
+        # #5 loudness forecast
+        predicted_tp = input_tp + (-14.0 - input_lufs)
+        if predicted_tp > -1.0:
+            warnings.append(f"Peaky track — normalizing to −14 would hit {predicted_tp:+.0f} dBTP, "
+                            "so it'll land a touch under −14 to keep peaks ≤ −1 dBTP (by design).")
+    return warnings
 
 
 def _controls_from_request(data: dict):
@@ -280,16 +354,23 @@ def upload():
     channels = 1 if audio.ndim == 1 else audio.shape[1]
     input_lufs = dsp.integrated_lufs(audio, sr)
     input_tp = dsp.true_peak_db(audio, sr)
-    # whole-track band envelope distribution -> sets the de-harsh threshold
-    # percentile; kept server-side (not sent to the client) and reused for
-    # every preview so a clip matches the full render.
-    env_db_ref = dsp.band_envelope_db(audio, sr)
-    # Loudness AFTER the (static) mud cut. The final export normalizes off the
-    # post-EQ loudness, so previews must gain off this -- not the raw input --
-    # or the A/B plays at a different level than the download. De-harsh's own
-    # effect on LUFS is negligible (it only touches brief spikes), so post-mud
-    # is a faithful stand-in for post-full-chain loudness.
-    gain_lufs = dsp.integrated_lufs(dsp.cut_mud(audio, sr), sr)
+
+    # Smart-tuner analysis: adaptive de-harsh band (targeted at the actual
+    # resonance), adaptive mud depth, preset/lean suggestion, and the
+    # whole-track band-envelope reference computed FOR THAT band (reused by
+    # every preview so a clip matches the full render). Band + mud_gain are
+    # track properties kept server-side, not user controls.
+    try:
+        band, mud_gain, env_db_ref, suggest = _analyze(audio, sr, duration)
+    except Exception:  # noqa: BLE001 -- fall back to the default band on failure
+        app.logger.exception("analyze failed")
+        band, mud_gain, suggest = None, None, None
+        env_db_ref = dsp.band_envelope_db(audio, sr)
+
+    # Loudness AFTER the mud cut (chosen depth) -> previews gain off this so the
+    # A/B level matches the export. De-harsh's own LUFS effect is negligible.
+    _mud = dsp._MUD_GAIN_DB if mud_gain is None else mud_gain
+    gain_lufs = dsp.integrated_lufs(dsp.cut_mud(audio, sr, gain_db=_mud), sr)
     if not np.isfinite(gain_lufs):
         gain_lufs = input_lufs
 
@@ -302,6 +383,7 @@ def upload():
     }
     _remember(_UPLOADS, uid, {
         "path": path, "meta": meta, "env_db_ref": env_db_ref,
+        "band": list(band) if band is not None else None, "mud_gain": mud_gain,
         "gain_lufs": None if not np.isfinite(gain_lufs) else float(gain_lufs),
     })
 
@@ -312,13 +394,13 @@ def upload():
         spectrogram = None
 
     try:
-        suggest = _suggest_settings(audio, sr, env_db_ref)
-    except Exception:  # noqa: BLE001 -- suggestion is optional, never fail upload
-        app.logger.exception("suggest failed")
-        suggest = None
+        warnings = _input_health(audio, sr, meta["input_lufs"], float(input_tp))
+    except Exception:  # noqa: BLE001
+        app.logger.exception("health failed")
+        warnings = []
 
-    return jsonify({"id": uid, "filename": upload.filename,
-                    "spectrogram": spectrogram, "suggest": suggest, **meta})
+    return jsonify({"id": uid, "filename": upload.filename, "spectrogram": spectrogram,
+                    "suggest": suggest, "warnings": warnings, **meta})
 
 
 def _read_segment(path: str, start_s: float, dur_s: float):
@@ -352,26 +434,29 @@ def preview():
     # matches the export; fall back to raw input if unavailable.
     gain_lufs = rec.get("gain_lufs") if rec.get("gain_lufs") is not None else meta["input_lufs"]
     env_ref = rec["env_db_ref"]
+    band = tuple(rec["band"]) if rec.get("band") else None       # adaptive band
+    mud_gain = rec.get("mud_gain")                               # adaptive mud
 
     processed = dsp.process(
         seg, sr, preset=preset, intensity=intensity,
         threshold_pctl=threshold_pctl, ratio=ratio, static_db=static_db,
-        env_db_ref=env_ref, measured_lufs=gain_lufs,
+        env_db_ref=env_ref, measured_lufs=gain_lufs, band=band, mud_gain=mud_gain,
     )
     # level-matched original (same loudness gain + ceiling, no EQ) for a fair A/B
     original = dsp.normalize_loudness(seg, sr, measured_lufs=gain_lufs)
 
     dh = dsp.deharsh_metrics(seg, sr, preset=preset, intensity=intensity,
                              threshold_pctl=threshold_pctl, ratio=ratio,
-                             static_db=static_db, env_db_ref=env_ref)
+                             static_db=static_db, env_db_ref=env_ref, band=band)
     gr_series = dsp.deharsh_gr_series(seg, sr, preset=preset, intensity=intensity,
                                       threshold_pctl=threshold_pctl, ratio=ratio,
-                                      static_db=static_db, env_db_ref=env_ref)
+                                      static_db=static_db, env_db_ref=env_ref, band=band)
 
     resp = {
         "processed_wav": _wav_data_uri(processed, sr),
         "spectrum": _spectrum_pair(original, processed, sr),
         "gr_series": gr_series,
+        "band": list(band) if band else list(_DEFAULT_BAND),  # for the band highlight
         "metrics": {
             "input_lufs": meta["input_lufs"],
             "target_lufs": -14.0,
@@ -395,9 +480,10 @@ def process_full():
     preset, intensity, threshold_pctl, ratio, static_db = _controls_from_request(data)
 
     audio, sr = sf.read(rec["path"], always_2d=False)
+    band = tuple(rec["band"]) if rec.get("band") else None
     processed = dsp.process(audio, sr, preset=preset, intensity=intensity,
                             threshold_pctl=threshold_pctl, ratio=ratio,
-                            static_db=static_db)
+                            static_db=static_db, band=band, mud_gain=rec.get("mud_gain"))
 
     out_lufs = dsp.integrated_lufs(processed, sr)
     out_tp = dsp.true_peak_db(processed, sr)
