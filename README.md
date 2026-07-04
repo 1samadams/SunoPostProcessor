@@ -71,9 +71,9 @@ Fly, or any host that can run `gunicorn app:app`.
 ## Status
 
 **Phase 1 (DSP core) + the interactive tuning web UI are in place.** Upload,
-preview short clips, A/B, tune presets/intensity/threshold/ratio, and export
-the full track. Preset threshold/ratio values are still starting points and
-need ear-tuning against real Suno exports — the Advanced panel exists exactly
-so you can find the right values by ear; don't assume "Standard" is dialed in
-yet. Batch/multi-file mode and saved settings are still to come. See CLAUDE.md
-for the full technical rationale and open questions.
+preview short clips, A/B, tune presets/intensity/threshold/ratio, inspect the
+harshness map / gain-reduction / spectral-change / loudness visualizers, and
+export the full track. The preset values are accepted working defaults; the
+Advanced panel retunes per-track if a specific track needs it. Batch/multi-file
+mode and saved settings are still to come. See CLAUDE.md for the full technical
+rationale and open questions.

@@ -10,8 +10,7 @@ integrated LUFS and true peak, and writes the processed WAV so you can listen.
     python test_dsp.py --selftest        # synthetic signal, no file needed
 
 The point of this script is to check the *numbers* and hear the de-harshing
-before we lock in the preset values in CLAUDE.md -- those thresholds are
-unvalidated placeholders.
+without opening the web app -- a quick DSP sanity check after any change.
 """
 
 from __future__ import annotations

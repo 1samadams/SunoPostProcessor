@@ -90,9 +90,10 @@ aren't stuck between two presets. The **Advanced** panel exposes the static cut
 (dB), percentile ("Sensitivity") and ratio directly for ear-tuning; set static
 to 0 dB for a purely-dynamic cut.
 
-**Important:** these percentile/ratio numbers are starting points, not gospel.
-They need tuning by ear against real Suno exports before trusting "Standard"
-as a true default — treat the table as the first draft to test.
+These values are the accepted working defaults (checked against real Suno
+exports with the visualizers — steady sheen confirmed, so the static blend
+carries the load). Not sacred: the Advanced panel retunes per-track by ear, and
+if a systematic bias shows up on more material, revisit the table.
 
 ## Web UI requirements
 
@@ -161,8 +162,8 @@ settings between runs.
   plus flask + gunicorn for the web/deploy layer.
 
 ## Known open questions (flag these back to the user, don't silently decide)
-- Exact threshold/ratio values per preset need ear-tuning against real
-  exports — treat current values as placeholders.
+- Preset values are the accepted defaults now (not placeholders). Revisit only
+  if a systematic bias shows up across more real exports.
 - Whether envelope follower should be peak or RMS-based may need A/B testing
   on actual cymbal-heavy vs vocal-heavy tracks.
 - **De-harsh band is fixed at 3–6 kHz, but measured real "air"/sibilance

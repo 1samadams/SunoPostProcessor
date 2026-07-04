@@ -46,8 +46,9 @@ import pyloudnorm as pyln
 # Advanced panel sets it directly, 0 dB reproduces the old pure-dynamic cut) so
 # it tames the sheen without the whole-band dulling a fixed static notch caused.
 #
-# NOTE: pctl/ratio/static values are still unvalidated placeholders -- ear-tune
-# them against real Suno exports (that's what the Advanced panel is for).
+# These pctl/ratio/static values are the working defaults, accepted on real
+# Suno exports. Not sacred -- the Advanced panel retunes per-track by ear if
+# something needs it -- but no longer placeholders.
 # ---------------------------------------------------------------------------
 PRESETS = {
     "Off": None,  # bypass de-harsh (mud cut + loudness still run)
