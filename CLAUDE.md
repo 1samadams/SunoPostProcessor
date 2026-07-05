@@ -147,9 +147,14 @@ off short **10 / 15 / 30 s** clips with a start-position scrubber:
   Heuristic thresholds are transparent (measured numbers ride in the reasons)
   and default to Standard when unsure; any manual control change dismisses the
   banner. The tuner never overrides a choice you make.
-- **Gapless A/B**: original and processed clips play in sync; a toggle gates
-  which you hear. The original is level-matched (same loudness gain + ceiling,
-  no EQ) so the A/B is honest — only the de-harsh/mud differ, not level.
+- **Gapless A/B**: original, processed, and **Removed** clips play in sync; a
+  toggle gates which you hear (aProc is the master clock). The original is
+  level-matched (same loudness gain + ceiling, no EQ) so the A/B is honest —
+  only the de-harsh/mud differ, not level. **Removed** plays exactly what the
+  processing takes out (original − processed, amplified ~+6 to +40 dB so it's
+  audible): hearing only hiss/sizzle = surgical, hearing music = cutting too
+  much. This is the validation tool for when a subtle change is hard to A/B in
+  the full mix (mono, near-silent when nothing is removed).
 - Live before/after **spectrum** (server-computed magnitudes drawn on a canvas)
   with the 3–6 kHz and 200–400 Hz bands highlighted, plus a LUFS / true-peak /
   de-harsh readout.

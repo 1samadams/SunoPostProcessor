@@ -445,6 +445,16 @@ def preview():
     # level-matched original (same loudness gain + ceiling, no EQ) for a fair A/B
     original = dsp.normalize_loudness(seg, sr, measured_lufs=gain_lufs)
 
+    # "Removed" monitor: exactly what the processing takes out, amplified so
+    # it's audible. Hearing only hiss/sizzle = surgical; hearing music = too
+    # much. Mono is plenty for this. Near-silent when nothing is removed (Off).
+    diff = np.asarray(original) - np.asarray(processed)
+    diff_mono = diff if diff.ndim == 1 else diff.mean(axis=1)
+    dpeak = float(np.max(np.abs(diff_mono)))
+    dgain = min((10.0 ** (-6.0 / 20.0)) / dpeak, 100.0) if dpeak > 1e-9 else 0.0
+    diff_mono = diff_mono * dgain
+    diff_gain_db = round(20.0 * np.log10(dgain), 1) if dgain > 0 else None
+
     dh = dsp.deharsh_metrics(seg, sr, preset=preset, intensity=intensity,
                              threshold_pctl=threshold_pctl, ratio=ratio,
                              static_db=static_db, env_db_ref=env_ref, band=band)
@@ -454,6 +464,7 @@ def preview():
 
     resp = {
         "processed_wav": _wav_data_uri(processed, sr),
+        "diff_wav": _wav_data_uri(diff_mono, sr),
         "spectrum": _spectrum_pair(original, processed, sr),
         "gr_series": gr_series,
         "band": list(band) if band else list(_DEFAULT_BAND),  # for the band highlight
@@ -464,6 +475,7 @@ def preview():
             "processed_tp": round(float(dsp.true_peak_db(processed, sr)), 2),
             "deharsh_peak_db": dh["peak_gr_db"],
             "deharsh_duty": dh["duty_pct"],
+            "diff_gain_db": diff_gain_db,
             "seg_start": round(float(start), 2),
             "seg_dur": round(float(seg.shape[0] / sr), 2),
         },
