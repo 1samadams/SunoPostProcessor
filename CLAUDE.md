@@ -134,6 +134,14 @@ off short **10 / 15 / 30 s** clips with a start-position scrubber:
   panel that hand-tunes threshold & ratio directly (this is the ear-tuning
   surface — kept behind a disclosure so the default view stays at 4 presets,
   no decision fatigue). Steps 2 & 3 stay automatic, no controls.
+- **Track assessment** (`_assessment`) — on upload, an experienced-engineer's
+  read of the whole track shown as a prominent card: a headline verdict plus
+  per-topic rows (Tone, Loudness/dynamics, Low end, Stereo, Technical), each
+  with a **plain-English** take AND a **technical** line (the measured numbers),
+  and a "Plan" of what the tool will do. Every line ties a measurement to an
+  interpretation — so a non-engineer learns what they've got and an engineer
+  gets the numbers. This is what tells you "your track is already solid" without
+  needing ears.
 - **Smart tuner / auto-suggest** (for when you'd rather not judge by ear): at
   upload the server analyses the whole track (`_analyze`), auto-applies a
   starting point, and shows the reasoning in a banner. It decides:

@@ -145,6 +145,26 @@ input[type=range]:disabled { opacity: .45; }
 .m-unit { font-size: .66rem; color: var(--muted); }
 .m-val.good { color: var(--good); } .m-val.warn { color: var(--warn); } .m-val.bad { color: var(--bad); }
 
+/* engineer's track assessment */
+.assess { padding: 1.1rem 1.25rem; margin-bottom: 1rem; }
+.assess-head { display: flex; align-items: center; gap: .5rem; font-size: .8rem;
+  text-transform: uppercase; letter-spacing: .09em; color: var(--muted); margin-bottom: .7rem; }
+.assess-badge { font-size: .6rem; font-weight: 800; letter-spacing: .1em; color: #fff;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  padding: .15rem .4rem; border-radius: 5px; }
+.assess-headline { font-size: 1.05rem; font-weight: 700; line-height: 1.45; margin: 0 0 1rem;
+  letter-spacing: -.01em; }
+.assess-items { display: grid; gap: .8rem; }
+.assess-item { display: grid; grid-template-columns: 5.5rem 1fr; gap: .2rem 1rem; align-items: baseline; }
+.assess-topic { font-size: .72rem; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--accent2); font-weight: 700; }
+.assess-plain { font-size: .92rem; color: var(--text); }
+.assess-tech { grid-column: 2; font-size: .76rem; color: var(--muted);
+  font-variant-numeric: tabular-nums; margin-top: .1rem; }
+.assess-plan { margin: 1.1rem 0 0; padding-top: .8rem; border-top: 1px solid var(--line);
+  font-size: .86rem; color: var(--muted); }
+.assess-plan strong { color: var(--text); }
+
 /* input health warnings */
 .warnings { padding: .8rem 1rem; margin-bottom: 1rem; border-color: rgba(251,191,36,.4);
   background: linear-gradient(180deg, rgba(251,191,36,.10), rgba(251,191,36,.03)); }
