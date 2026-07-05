@@ -5,3 +5,4 @@ _selftest_*.wav
 *_processed.wav
 .venv/
 venv/
+*.flac

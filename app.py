@@ -156,7 +156,14 @@ def _detect_band(f: np.ndarray, psd: np.ndarray, sr: int):
     trend = np.polyval(np.polyfit(logf, pp, 2), logf)
     excess = np.clip(pp - trend, 0.0, None)
 
-    reg = ff >= 2500.0
+    # Only chase a resonance that carries real ENERGY. On a dark track the top
+    # rolls off steeply, so a tiny bump in the near-silent air region shows a
+    # big *relative* excess above the trend -- but it's not harshness. Gate the
+    # search to frequencies within 12 dB of the upper-mid level; else the band
+    # is meaningless (and de-harsh is Off on such tracks anyway).
+    mid_sel = (f >= 600.0) & (f < 2000.0)
+    mid_ref = 10.0 * np.log10(float(psd[mid_sel].mean()) + 1e-20) if mid_sel.any() else -60.0
+    reg = (ff >= 2500.0) & (pp >= mid_ref - 12.0)
     if not reg.any() or float(excess[reg].max()) < 1.2:
         return _DEFAULT_BAND, None, float(excess[reg].max()) if reg.any() else 0.0
 
@@ -230,22 +237,32 @@ def _analyze(audio: np.ndarray, sr: int, duration: float):
     mono = audio if audio.ndim == 1 else audio.mean(axis=1)
     f, psd = signal.welch(mono, fs=sr, nperseg=int(min(8192, len(mono))))
 
-    band, f0, res_h = _detect_band(f, psd, sr)
-    mud_gain = _detect_mud(f, psd)
-    env_db_ref = dsp.band_envelope_db(audio, sr, band=band)
-    harsh_start = _harsh_start(env_db_ref, duration)
-
     def dens(lo, hi):
         sel = (f >= lo) & (f < min(hi, sr / 2.0))
         return 10.0 * np.log10(float(psd[sel].mean()) + 1e-20) if sel.any() else -120.0
 
-    brightness = float(dens(band[0], band[1]) - dens(200, 2000))
-    crest = (float(np.percentile(env_db_ref, 95) - np.percentile(env_db_ref, 50))
-             if np.asarray(env_db_ref).size > 4 else 8.0)
+    band, f0, res_h = _detect_band(f, psd, sr)
+    mud_gain = _detect_mud(f, psd)
+
+    # preset STRENGTH is decided from a FIXED broad harsh region (2.5-9 kHz vs
+    # the mids), NOT the detected band -- so it catches harshness wherever it
+    # sits and stays stable regardless of where band detection lands. The band
+    # only decides WHERE to apply the cut, not whether to.
+    brightness = float(dens(2500, 9000) - dens(200, 2000))
 
     # preset STRENGTH from brightness (pink-referenced boundaries)
     bounds = [(-13, "Off"), (-10, "Gentle"), (-5, "Standard"), (1e9, "Aggressive")]
     preset = next(name for thr, name in bounds if brightness < thr)
+
+    # a tame track has no resonance worth chasing -> keep the default band, so
+    # if you override Off->a preset it de-harshes the sensible 3-6 kHz.
+    if preset == "Off":
+        band, f0, res_h = _DEFAULT_BAND, None, 0.0
+    env_db_ref = dsp.band_envelope_db(audio, sr, band=band)  # matches final band
+    harsh_start = _harsh_start(env_db_ref, duration)
+    crest = (float(np.percentile(env_db_ref, 95) - np.percentile(env_db_ref, 50))
+             if np.asarray(env_db_ref).size > 4 else 8.0)
+
     reasons = [("band already tame" if preset == "Off" else
                 {"Gentle": "mild", "Standard": "moderate", "Aggressive": "hot"}[preset]
                 + f" band energy ({brightness:+.0f} dB vs mids)")]
