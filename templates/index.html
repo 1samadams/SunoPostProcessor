@@ -3,216 +3,227 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Suno Post-Processor</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='12' fill='%237c5cff'/></svg>">
+<title>Suno::Analyzer &mdash; Post-Processor</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='11' fill='%23ffc46b'/></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<div class="app">
+<div class="desk">
+  <!-- ================= INSTRUMENT UNIT ================= -->
+  <div class="unit">
 
-  <header class="masthead">
-    <div class="brand">
-      <span class="dot"></span>
-      <h1>Suno Post-Processor</h1>
-    </div>
-    <p class="tagline">De-harsh &rarr; mud cut &rarr; normalize to &minus;14&nbsp;LUFS / &minus;1&nbsp;dBTP</p>
-  </header>
-
-  <!-- upload -->
-  <section id="drop" class="dropzone card">
-    <input id="file" type="file" accept=".wav,audio/wav" hidden>
-    <div class="drop-inner">
-      <div class="drop-icon">&#8681;</div>
-      <p class="drop-title">Drop a WAV here or <button type="button" id="browse" class="link">browse</button></p>
-      <p class="drop-sub">Suno export, single file &middot; up to 200&nbsp;MB</p>
-    </div>
-    <div id="uploading" class="uploading hidden"><span class="spinner"></span> Reading &amp; analysing&hellip;</div>
-  </section>
-
-  <!-- workspace -->
-  <main id="workspace" class="workspace hidden">
-
-    <!-- file bar -->
-    <div class="filebar card">
-      <div class="file-meta">
-        <strong id="fname">track.wav</strong>
-        <span id="fdetail" class="muted"></span>
+    <!-- top bar -->
+    <header class="topbar">
+      <div class="brand">
+        <span class="pilot"></span>
+        <span class="logo">SUNO<span class="logo-sep">::</span>ANALYZER</span>
       </div>
-      <button type="button" id="change" class="ghost">Change file</button>
-    </div>
+      <span class="model">MODEL&nbsp;SA-14</span>
+      <div class="spacer"></div>
+      <div id="topfile" class="topfile"><span class="fdot"></span><span id="topfile-text">no signal</span></div>
+      <button type="button" id="eject" class="eject">&#9098; EJECT</button>
+    </header>
 
-    <!-- engineer's track assessment -->
-    <section id="assessment" class="assess card hidden">
-      <div class="assess-head"><span class="assess-badge">READ</span> Track assessment</div>
-      <p id="assess-headline" class="assess-headline"></p>
-      <div id="assess-items" class="assess-items"></div>
-      <p id="assess-plan" class="assess-plan"></p>
-    </section>
+    <div class="body">
 
-    <!-- input health warnings -->
-    <div id="warnings" class="warnings card hidden"></div>
+      <!-- ================= CRT SCREEN ================= -->
+      <div class="crt">
+        <div class="crt-scan"></div>
+        <div class="crt-vig"></div>
 
-    <!-- whole-track spectrogram (harshness map) -->
-    <section id="specgram-card" class="specgram card hidden">
-      <div class="sg-head">
-        <h2>Harshness map &mdash; whole track</h2>
-        <span class="muted">brighter = more energy &middot; is the 3&ndash;6&nbsp;kHz band (or above) lit up, steady or in bursts?</span>
-      </div>
-      <div class="sg-wrap">
-        <canvas id="specgram" width="960" height="200"></canvas>
-        <div class="sg-yaxis" id="sg-yaxis"></div>
-      </div>
-    </section>
+        <!-- workspace screen -->
+        <div id="screen-work" class="screen-work">
+          <div class="ch-head">
+            <span>CH1 &middot; SPECTRUM &nbsp;<span class="ch-sub">before / after</span></span>
+            <span id="render-status" class="redraw hidden">&#9679; REDRAW</span>
+            <span class="ch-sub">dB / LOG f</span>
+          </div>
+          <canvas id="spectrum" class="cv-spectrum"></canvas>
 
-    <div class="grid">
+          <div class="ch-head ch-head-mt">
+            <span>CH2 &middot; DE-HARSH REDUCTION</span>
+            <span id="gr-scale" class="ch-sub">&minus;8 dB</span>
+          </div>
+          <div class="gr-wrap">
+            <canvas id="grtl" class="cv-gr"></canvas>
+            <div id="gr-playhead" class="playhead"></div>
+          </div>
 
-      <!-- controls -->
-      <section class="panel card">
-        <h2>De-harsh</h2>
+          <div class="ch-head ch-head-mt">
+            <span>CH3 &middot; HARSHNESS WATERFALL</span>
+            <span id="sg-sub" class="ch-sub">whole track &middot; band marked</span>
+          </div>
+          <div class="sg-wrap">
+            <canvas id="specgram" class="cv-harsh"></canvas>
+            <div id="sg-yaxis" class="sg-yaxis"></div>
+          </div>
 
-        <div id="suggest" class="suggest hidden">
-          <div class="suggest-top"><span class="suggest-badge">AUTO</span>
-            <span id="suggest-title">&mdash;</span>
-            <span id="suggest-conf" class="suggest-conf hidden">borderline</span></div>
-          <div id="suggest-sub" class="suggest-sub"></div>
-          <ul id="suggest-reasons" class="suggest-reasons"></ul>
-          <div id="suggest-note" class="suggest-note hidden"></div>
+          <!-- transport -->
+          <div class="transport">
+            <button type="button" id="play" class="play" aria-label="Play/pause">&#9658;</button>
+            <div class="scrub"><div id="scrub-fill" class="scrub-fill"></div></div>
+            <span id="time" class="time">0:00 / 0:10</span>
+          </div>
         </div>
 
-        <label class="lbl">Preset</label>
-        <div id="presets" class="segmented">
-          {% for p in presets %}
-          <button type="button" class="seg" data-preset="{{ p }}"{% if p == 'Standard' %} data-active="1"{% endif %}>{{ p }}</button>
-          {% endfor %}
+        <!-- drop / NO SIGNAL screen -->
+        <div id="screen-drop" class="screen-drop">
+          <canvas id="dropline" class="cv-dropline"></canvas>
+          <div class="ns-title">NO SIGNAL</div>
+          <div class="ns-sub">DROP A WAV EXPORT &middot; SINGLE FILE &middot; UP TO 200&nbsp;MB</div>
+          <input id="file" type="file" accept=".wav,audio/wav" hidden>
+          <button type="button" id="load" class="load">&#9099; LOAD WAV FILE</button>
+          <div id="uploading" class="uploading hidden"><span class="spinner"></span> READING &amp; ANALYSING&hellip;</div>
+        </div>
+      </div>
+
+      <!-- ================= INSTRUMENT PANEL ================= -->
+      <div id="panel" class="panel">
+
+        <!-- readouts -->
+        <div class="card readouts">
+          <div class="ro-grid">
+            <div class="ro"><div class="ro-lab">IN &middot; LUFS</div><div id="m-in" class="ro-val">&minus;&ndash;</div></div>
+            <div class="ro"><div class="ro-lab">OUT &middot; LUFS</div><div id="m-out" class="ro-val">&minus;14.0</div></div>
+            <div class="ro"><div class="ro-lab">TRUE PEAK</div><div id="m-tp" class="ro-val">&minus;&ndash;</div></div>
+            <div class="ro"><div class="ro-lab">DE-HARSH</div><div id="m-dh" class="ro-val ro-val2">0.0</div></div>
+          </div>
+          <div class="gauges">
+            <div class="gauge-col">
+              <div class="gauge-lab">LUFS &rarr; &minus;14</div>
+              <div class="gauge">
+                <div id="lufs-fill" class="gauge-fill"></div>
+                <div id="lufs-target" class="gauge-tick"></div>
+                <div id="lufs-in" class="gauge-dot" title="input"></div>
+              </div>
+            </div>
+            <div class="gauge-col">
+              <div class="gauge-lab">PEAK &rarr; &minus;1 TP</div>
+              <div class="gauge">
+                <div id="tp-fill" class="gauge-fill tp"></div>
+                <div id="tp-ceil" class="gauge-tick ceil"></div>
+              </div>
+            </div>
+          </div>
         </div>
 
-        <div class="slider-row">
-          <label class="lbl" for="intensity">Intensity <span id="intensity-val" class="val">100%</span></label>
+        <!-- auto analysis ticker -->
+        <div id="suggest" class="card ticker hidden">
+          <div class="ticker-top">
+            <span class="badge-auto">AUTO</span>
+            <span id="sug-title" class="ticker-title">&mdash;</span>
+            <span id="sug-conf" class="badge-conf hidden">BORDERLINE</span>
+          </div>
+          <div id="sug-sub" class="ticker-sub"></div>
+          <div id="sug-note" class="ticker-note hidden"></div>
+        </div>
+
+        <!-- input health -->
+        <div id="warnings" class="card health hidden">
+          <div class="health-head">&#9888; INPUT HEALTH</div>
+          <div id="warnings-body" class="health-body"></div>
+        </div>
+
+        <!-- track assessment (engineer read) -->
+        <details id="assessment" class="card assess hidden">
+          <summary class="assess-sum"><span class="badge-read">READ</span> TRACK ASSESSMENT</summary>
+          <div class="assess-body">
+            <p id="assess-headline" class="assess-headline"></p>
+            <div id="assess-items" class="assess-items"></div>
+            <p id="assess-plan" class="assess-plan"></p>
+          </div>
+        </details>
+
+        <!-- function selector -->
+        <div class="block">
+          <div class="block-lab">FUNCTION &middot; DE-HARSH</div>
+          <div id="presets" class="segmented">
+            <button type="button" class="seg" data-preset="Off">OFF</button>
+            <button type="button" class="seg" data-preset="Gentle">GTL</button>
+            <button type="button" class="seg" data-preset="Standard" data-active="1">STD</button>
+            <button type="button" class="seg" data-preset="Aggressive">AGR</button>
+          </div>
+        </div>
+
+        <!-- intensity -->
+        <div class="block">
+          <div class="block-lab row"><span>GAIN / INTENSITY</span><span id="intensity-val" class="val">100%</span></div>
           <input id="intensity" type="range" min="0" max="150" value="100" step="1">
         </div>
 
-        <details id="advanced" class="advanced">
-          <summary>Advanced &mdash; hand-tune static, sensitivity &amp; ratio</summary>
-          <label class="chk"><input id="custom" type="checkbox"> Override preset (custom)</label>
-          <div class="slider-row">
-            <label class="lbl" for="static">Static cut <span id="static-val" class="val">&minus;1.5&nbsp;dB</span></label>
-            <input id="static" type="range" min="-6" max="0" value="-1.5" step="0.5" disabled>
+        <!-- source select -->
+        <div class="block">
+          <div class="block-lab">SOURCE SELECT</div>
+          <div class="source">
+            <button type="button" id="ab-orig" class="src" data-active="1"><span class="led"></span>A &middot; ORIG</button>
+            <button type="button" id="ab-proc" class="src"><span class="led"></span>B &middot; PROC</button>
+            <button type="button" id="ab-diff" class="src" title="what the processing removes, amplified"><span class="led"></span>C &middot; REM</button>
           </div>
-          <div class="slider-row">
-            <label class="lbl" for="threshold">Sensitivity <span id="threshold-val" class="val">grabs top 9%</span></label>
-            <input id="threshold" type="range" min="70" max="99" value="91" step="1" disabled>
+          <p id="ab-hint" class="ab-hint hidden">only hiss/sizzle = surgical &middot; music/vocals = cutting too much</p>
+        </div>
+
+        <!-- preview clip -->
+        <div class="block clip-block">
+          <div class="clip-col">
+            <div class="block-lab">CLIP</div>
+            <div id="durs" class="clip-btns">
+              <button type="button" class="seg" data-dur="10" data-active="1">10</button>
+              <button type="button" class="seg" data-dur="15">15</button>
+              <button type="button" class="seg" data-dur="30">30</button>
+            </div>
           </div>
-          <div class="slider-row">
-            <label class="lbl" for="ratio">Ratio <span id="ratio-val" class="val">3.0:1</span></label>
-            <input id="ratio" type="range" min="1.5" max="8" value="3" step="0.5" disabled>
+          <div class="start-col">
+            <div class="block-lab row"><span>START</span><span id="start-val" class="val">0:00</span></div>
+            <input id="start" type="range" min="0" max="0" value="0" step="1">
           </div>
-          <p class="hint"><b>Static cut</b> = a gentle always-on reduction that
-          tames steady "sheen" (set 0 for pure-dynamic). <b>Sensitivity/Ratio</b>
-          = the dynamic spike-catch for transient sibilance. The presets are
-          sensible defaults &mdash; only reach in here if a track needs it.</p>
+        </div>
+
+        <!-- advanced -->
+        <details class="card advanced">
+          <summary class="adv-sum">ADVANCED &middot; STATIC / SENS / RATIO</summary>
+          <div class="adv-body">
+            <div class="adv-row">
+              <div class="block-lab row"><span>STATIC CUT</span><span id="static-val" class="val">&minus;1.5 dB</span></div>
+              <input id="static" type="range" min="-6" max="0" value="-1.5" step="0.5">
+            </div>
+            <div class="adv-row">
+              <div class="block-lab row"><span>SENSITIVITY</span><span id="threshold-val" class="val">top 9%</span></div>
+              <input id="threshold" type="range" min="70" max="99" value="91" step="1">
+            </div>
+            <div class="adv-row">
+              <div class="block-lab row"><span>RATIO</span><span id="ratio-val" class="val">3.0:1</span></div>
+              <input id="ratio" type="range" min="1.5" max="8" value="3" step="0.5">
+            </div>
+            <p class="adv-hint">Static cut = gentle always-on reduction for steady sheen (0 = pure-dynamic). Sensitivity/Ratio = the dynamic spike-catch. Moving any slider hand-tunes (overrides the preset).</p>
+          </div>
         </details>
 
-        <hr>
-
-        <h2>Preview</h2>
-        <label class="lbl">Clip length</label>
-        <div id="durs" class="segmented">
-          <button type="button" class="seg" data-dur="10" data-active="1">10s</button>
-          <button type="button" class="seg" data-dur="15">15s</button>
-          <button type="button" class="seg" data-dur="30">30s</button>
-        </div>
-        <div class="slider-row">
-          <label class="lbl" for="start">Start <span id="start-val" class="val">0:00</span></label>
-          <input id="start" type="range" min="0" max="0" value="0" step="0.5">
-        </div>
-      </section>
-
-      <!-- monitor -->
-      <section class="panel card">
-        <div class="ab-head">
-          <h2>A / B</h2>
-          <span id="render-status" class="render hidden"><span class="spinner"></span> rendering</span>
-        </div>
-
-        <div class="ab-toggle">
-          <button type="button" id="ab-orig" class="ab" data-active="1">Original</button>
-          <button type="button" id="ab-proc" class="ab">Processed</button>
-          <button type="button" id="ab-diff" class="ab" title="what the processing removes, amplified">Removed</button>
-        </div>
-        <p id="ab-hint" class="ab-hint hidden">Hearing only hiss/sizzle = surgical &middot; hearing music/vocals = cutting too much</p>
-
-        <div class="transport">
-          <button type="button" id="play" class="play" aria-label="Play/pause">&#9658;</button>
-          <div class="scrub"><div id="scrub-fill" class="scrub-fill"></div></div>
-          <span id="time" class="time muted">0:00</span>
-        </div>
-
-        <!-- de-harsh gain-reduction over the clip, playhead synced to A/B -->
-        <div class="gr-wrap">
-          <div class="gr-head"><span>De-harsh reduction</span><span id="gr-scale" class="muted">0 dB</span></div>
-          <div class="gr-canvas-wrap">
-            <canvas id="grtl" width="640" height="70"></canvas>
-            <div id="gr-playhead" class="playhead"></div>
+        <!-- GR ladder + process -->
+        <div class="card export">
+          <div class="block-lab row exp-lab"><span>GR LEVEL</span><span id="gr-ladder-scale">&minus;8 dB FS</span></div>
+          <div id="led-ladder" class="led-ladder">
+            <span></span><span></span><span></span><span></span><span></span><span></span>
+            <span></span><span></span><span></span><span></span><span></span><span></span>
           </div>
+          <button type="button" id="commit" class="commit">&#9660; PROCESS FULL TRACK</button>
+          <div id="commit-note" class="commit-note">renders whole track &middot; these exact settings</div>
+          <div id="commit-status" class="commit-status hidden"></div>
         </div>
-
-        <div class="meters">
-          <div class="meter"><span class="m-label">Input</span><span id="m-in" class="m-val">&ndash;</span><span class="m-unit">LUFS</span></div>
-          <div class="meter"><span class="m-label">Target</span><span id="m-target" class="m-val">&minus;14</span><span class="m-unit">LUFS</span></div>
-          <div class="meter"><span class="m-label">True peak</span><span id="m-tp" class="m-val">&ndash;</span><span class="m-unit">dBTP</span></div>
-          <div class="meter"><span class="m-label">De-harsh</span><span id="m-dh" class="m-val">&ndash;</span><span class="m-unit">dB peak</span></div>
-        </div>
-
-        <!-- graphical before/after loudness + true-peak meter -->
-        <div class="loud">
-          <div class="loud-row">
-            <span class="loud-lab">LUFS</span>
-            <div class="gauge">
-              <div class="gauge-fill" id="lufs-fill"></div>
-              <div class="gauge-tick" id="lufs-target"></div>
-              <div class="gauge-dot" id="lufs-in" title="input"></div>
-            </div>
-            <span class="loud-val" id="lufs-txt">&ndash;</span>
-          </div>
-          <div class="loud-row">
-            <span class="loud-lab">Peak</span>
-            <div class="gauge">
-              <div class="gauge-fill tp" id="tp-fill"></div>
-              <div class="gauge-tick ceil" id="tp-ceil"></div>
-            </div>
-            <span class="loud-val" id="tp2-txt">&ndash;</span>
-          </div>
-          <div class="loud-legend"><span id="loud-note" class="muted">input &rarr; &minus;14 LUFS target, ceiling &minus;1 dBTP</span></div>
-        </div>
-
-        <div class="spectrum-wrap">
-          <canvas id="spectrum" width="640" height="200"></canvas>
-          <div class="diff-head"><span>What changed</span><span class="muted">processed &minus; original</span></div>
-          <canvas id="specdiff" width="640" height="70"></canvas>
-          <div class="legend">
-            <span class="lg lg-orig">Original</span>
-            <span class="lg lg-proc">Processed</span>
-            <span class="lg lg-diff">Change</span>
-            <span class="lg lg-band">3&ndash;6&nbsp;kHz</span>
-            <span class="lg lg-mud">mud</span>
-          </div>
-        </div>
-      </section>
+      </div>
     </div>
 
-    <!-- commit -->
-    <section class="commit card">
-      <div>
-        <strong>Happy with it?</strong>
-        <span class="muted">Runs the full track with these exact settings.</span>
-      </div>
-      <button type="button" id="commit" class="primary">Process &amp; download full track</button>
-    </section>
-    <div id="commit-status" class="commit-status hidden"></div>
-  </main>
-
-  <p id="toast" class="toast hidden"></p>
+    <!-- bottom silkscreen -->
+    <footer class="silk">
+      <span>DE-HARSH &rarr; MUD CUT &rarr; NORMALIZE &minus;14 LUFS / &minus;1 dBTP</span>
+      <span>ITU-R BS.1770 &middot; 4&times; OVERSAMPLED TP</span>
+    </footer>
+  </div>
 </div>
+
+<p id="toast" class="toast hidden"></p>
 <script src="/static/app.js"></script>
 </body>
 </html>

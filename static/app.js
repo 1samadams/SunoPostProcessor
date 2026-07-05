@@ -8,6 +8,19 @@ const PRESET_BASE = {
   Aggressive: { t: 84, r: 5, s: -3.0 },
 };
 
+// CRT amber phosphor palette (mirrors --tokens in style.css; used by canvas draws)
+const PAL = {
+  bg: "#080b09", accent: "#ffc46b", accent2: "#ff9d3d",
+  orig: "#6a5a34", proc: "#ffc46b", band: "#ff9d3d", mud: "#e0b060",
+  grid: "#3a2e12", muted: "#9c8f72", text: "#f0e6d2",
+  good: "#ffc46b", warn: "#ffb454", bad: "#ff6b4a",
+};
+const alpha = (hex, a) => {
+  hex = hex.replace("#", "");
+  const r = parseInt(hex.slice(0, 2), 16), g = parseInt(hex.slice(2, 4), 16), b = parseInt(hex.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${a})`;
+};
+
 const state = {
   id: null, filename: null, sr: 0, duration: 0, channels: 1, inputLufs: null,
   preset: "Standard", intensity: 100,
@@ -57,6 +70,14 @@ function setActive(which) {
   $("ab-diff").dataset.active = which === "diff" ? "1" : "0";
   $("ab-hint").classList.toggle("hidden", which !== "diff");
   applyGains();
+  flashRedraw();
+  if (lastSpectrum) drawSpectrum(lastSpectrum);   // re-emphasise the active curve
+}
+function flashRedraw() {
+  const rn = $("render-status"); if (!rn) return;
+  rn.classList.remove("hidden");
+  clearTimeout(flashRedraw._t);
+  flashRedraw._t = setTimeout(() => rn.classList.add("hidden"), 450);
 }
 async function togglePlay() {
   if (!aProc.src) return;
@@ -67,7 +88,7 @@ async function togglePlay() {
     A_ALL.forEach((a) => { if (a.src) { try { a.currentTime = t; } catch (e) {} } });
     applyGains();
     await Promise.allSettled(A_ALL.filter((a) => a.src).map((a) => a.play()));
-    playing = true; $("play").innerHTML = "&#10073;&#10073;";
+    playing = true; $("play").innerHTML = "&#10074;&#10074;";
   }
 }
 // aProc is the master clock; keep the others locked to it and drive the scrubber
@@ -80,7 +101,7 @@ aProc.addEventListener("timeupdate", () => {
   const d = aProc.duration || state.dur || 1;
   const frac = Math.min(1, aProc.currentTime / d);
   $("scrub-fill").style.width = `${frac * 100}%`;
-  $("time").textContent = fmtTime(aProc.currentTime);
+  $("time").textContent = `${fmtTime(state.start + aProc.currentTime)} / ${fmtTime(d)}`;
   const ph = $("gr-playhead");
   ph.style.left = `${frac * 100}%`; ph.classList.add("on");
 });
@@ -93,26 +114,40 @@ function onEnded() {
 aProc.addEventListener("ended", onEnded);
 
 // ---------------------------------------------------------------------------
-// upload
+// upload — the CRT drop screen is the drop target; LOAD opens the file picker
 // ---------------------------------------------------------------------------
-const drop = $("drop");
-$("browse").addEventListener("click", (e) => { e.stopPropagation(); $("file").click(); });
-drop.addEventListener("click", () => $("file").click());
-$("change").addEventListener("click", () => $("file").click());
+const crt = document.querySelector(".crt");
+$("load").addEventListener("click", () => $("file").click());
 $("file").addEventListener("change", (e) => { if (e.target.files[0]) doUpload(e.target.files[0]); });
 ["dragenter", "dragover"].forEach((ev) =>
-  drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+  crt.addEventListener(ev, (e) => { e.preventDefault(); crt.classList.add("drag"); }));
 ["dragleave", "drop"].forEach((ev) =>
-  drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
-drop.addEventListener("drop", (e) => {
+  crt.addEventListener(ev, (e) => { e.preventDefault(); crt.classList.remove("drag"); }));
+crt.addEventListener("drop", (e) => {
   const f = e.dataTransfer.files[0];
   if (f) doUpload(f);
 });
 
+// EJECT -> back to the NO SIGNAL screen (production upload/empty state)
+$("eject").addEventListener("click", () => {
+  if (playing) togglePlay();
+  A_ALL.forEach((a) => { a.pause(); a.removeAttribute("src"); a.load(); });
+  state.id = null;
+  showDrop(true);
+});
+
+function showDrop(on) {
+  $("screen-work").style.display = on ? "none" : "block";
+  $("screen-drop").style.display = on ? "block" : "none";
+  $("panel").classList.toggle("off", on);
+  $("topfile").classList.toggle("dim", on);
+  if (on) { drawDropLine(); $("topfile-text").textContent = "no signal"; }
+}
+
 async function doUpload(file) {
   if (!file.name.toLowerCase().endsWith(".wav")) { toast("Please choose a .wav file"); return; }
   $("uploading").classList.remove("hidden");
-  $("browse").parentElement.parentElement.classList.add("hidden");
+  $("load").classList.add("hidden");
   const fd = new FormData(); fd.append("file", file);
   try {
     const r = await fetch("/upload", { method: "POST", body: fd });
@@ -122,30 +157,28 @@ async function doUpload(file) {
       id: data.id, filename: data.filename, sr: data.sr, duration: data.duration,
       channels: data.channels, inputLufs: data.input_lufs, start: 0, lastSegKey: null,
     });
-    $("fname").textContent = data.filename;
-    $("fdetail").textContent =
-      `${data.sr.toLocaleString()} Hz · ${data.channels === 1 ? "mono" : "stereo"} · `
-      + `${fmtTime(data.duration)} · in ${data.input_lufs ?? "–"} LUFS · ${data.input_tp} dBTP`;
+    $("topfile-text").textContent =
+      `${data.filename} · ${(data.sr / 1000).toFixed(1)}k / `
+      + `${data.channels === 1 ? "mono" : "stereo"} · ${fmtTime(data.duration)}`;
     $("start").max = Math.max(0, data.duration - state.dur).toFixed(1);
     $("start").value = 0; $("start-val").textContent = "0:00";
-    $("workspace").classList.remove("hidden");
+    showDrop(false);
     renderAssessment(data.assessment);
     renderWarnings(data.warnings);
     applySuggestion(data.suggest);   // sets state.band before we draw the map
     if (data.spectrogram) {
       specgram = decodeSpectrogram(data.spectrogram);
-      $("specgram-card").classList.remove("hidden");
       drawSpectrogram(specgram);
     } else {
-      specgram = null; $("specgram-card").classList.add("hidden");
+      specgram = null;
     }
     refreshPreview(true);
   } catch (err) {
     toast(err.message);
-    $("drop").classList.remove("hidden");
+    showDrop(true);
   } finally {
     $("uploading").classList.add("hidden");
-    $("drop").querySelector(".drop-inner").classList.remove("hidden");
+    $("load").classList.remove("hidden");
   }
 }
 
@@ -154,12 +187,11 @@ async function doUpload(file) {
 // ---------------------------------------------------------------------------
 $("presets").addEventListener("click", (e) => {
   const b = e.target.closest(".seg"); if (!b) return;
-  hideSuggest();
+  hideSuggestConf();
   state.preset = b.dataset.preset;
   [...$("presets").children].forEach((s) => s.dataset.active = s === b ? "1" : "0");
   // snap advanced sliders to preset, leave custom mode
-  state.custom = false; $("custom").checked = false;
-  syncAdvancedDisabled();
+  state.custom = false;
   const base = PRESET_BASE[state.preset];
   if (base) {
     state.threshold = base.t; state.ratio = base.r; state.static = base.s;
@@ -179,22 +211,19 @@ $("durs").addEventListener("click", (e) => {
   refreshPreview(true);
 });
 $("intensity").addEventListener("input", (e) => {
-  hideSuggest();
+  hideSuggestConf();
   state.intensity = +e.target.value; $("intensity-val").textContent = `${state.intensity}%`;
+  $("sug-title").textContent = `${state.preset.toUpperCase()} · ${state.intensity}%`;
   refreshPreview(false);
 });
 $("start").addEventListener("input", (e) => {
   state.start = +e.target.value; $("start-val").textContent = fmtTime(state.start);
   refreshPreview(true);
 });
-$("custom").addEventListener("change", (e) => {
-  hideSuggest();
-  state.custom = e.target.checked; syncAdvancedDisabled(); markPresetModified(state.custom);
-  refreshPreview(false);
-});
+// moving any advanced slider hand-tunes (overrides the preset) — no checkbox needed
 function enterCustom() {
-  hideSuggest();
-  if (!state.custom) { state.custom = true; $("custom").checked = true; syncAdvancedDisabled(); markPresetModified(true); }
+  hideSuggestConf();
+  if (!state.custom) { state.custom = true; markPresetModified(true); }
 }
 $("static").addEventListener("input", (e) => {
   state.static = +e.target.value; updateAdvancedLabels(); enterCustom(); refreshPreview(false);
@@ -210,16 +239,10 @@ $("ab-proc").addEventListener("click", () => setActive("proc"));
 $("ab-diff").addEventListener("click", () => setActive("diff"));
 $("play").addEventListener("click", togglePlay);
 
-function syncAdvancedDisabled() {
-  const off = state.preset === "Off";
-  $("static").disabled = !state.custom || off;
-  $("threshold").disabled = !state.custom || off;
-  $("ratio").disabled = !state.custom || off;
-}
 function updateAdvancedLabels() {
   const s = +state.static;
   $("static-val").textContent = `${s < 0 ? "−" : ""}${Math.abs(s).toFixed(1)} dB`;
-  $("threshold-val").textContent = `grabs top ${Math.round(100 - state.threshold)}%`;
+  $("threshold-val").textContent = `top ${Math.round(100 - state.threshold)}%`;
   $("ratio-val").textContent = `${(+state.ratio).toFixed(1)}:1`;
 }
 function markPresetModified(on) {
@@ -241,14 +264,14 @@ function applySuggestion(sug) {
 
   const base = PRESET_BASE[sug.preset];
   if (sug.custom && sug.static_db != null) {
-    state.custom = true; $("custom").checked = true;
+    state.custom = true;
     state.static = sug.static_db; state.threshold = sug.threshold_pctl; state.ratio = sug.ratio;
   } else {
-    state.custom = false; $("custom").checked = false;
+    state.custom = false;
     if (base) { state.static = base.s; state.threshold = base.t; state.ratio = base.r; }
   }
   $("static").value = state.static; $("threshold").value = state.threshold; $("ratio").value = state.ratio;
-  updateAdvancedLabels(); syncAdvancedDisabled(); markPresetModified(sug.custom);
+  updateAdvancedLabels(); markPresetModified(sug.custom);
 
   // auto-jump the preview to where the harshness actually lives
   if (sug.harsh_start != null) {
@@ -257,41 +280,37 @@ function applySuggestion(sug) {
     $("start").value = state.start; $("start-val").textContent = fmtTime(state.start);
   }
 
-  let extra = "";
-  if (sug.custom && base && sug.static_db != null) {
-    extra = sug.static_db < base.s - 0.3 ? " + extra static"
-      : sug.static_db > base.s + 0.3 ? " (leaner, more dynamic)" : "";
-  }
-  $("suggest-title").textContent = sug.preset === "Off"
-    ? "Auto: leave it — already clean" : `Auto-picked: ${sug.preset}${extra}`;
-  const conf = $("suggest-conf");
-  conf.classList.toggle("hidden", sug.confidence !== "borderline");
-  const parts = [];
-  if (sug.band_display && sug.preset !== "Off") parts.push(`targeting ${sug.band_display}`);
-  if (sug.mud_db != null) parts.push(`mud ${sug.mud_db} dB`);
-  if (sug.harsh_start) parts.push(`preview @ ${fmtTime(sug.harsh_start)}`);
-  $("suggest-sub").textContent = parts.join(" · ");
-  const ul = $("suggest-reasons"); ul.innerHTML = "";
-  (sug.reasons || []).forEach((r) => { const li = document.createElement("li"); li.textContent = r; ul.appendChild(li); });
-  (sug.cleanup || []).forEach((r) => {
-    const li = document.createElement("li"); li.textContent = "+ " + r; li.className = "sug-cleanup"; ul.appendChild(li);
-  });
-  const note = $("suggest-note");
+  $("sug-title").textContent = `${sug.preset.toUpperCase()} · ${sug.intensity}%`;
+  $("sug-conf").classList.toggle("hidden", sug.confidence !== "borderline");
+
+  const lines = [];
+  (sug.reasons || []).forEach((r) => lines.push({ text: r, cleanup: false }));
+  (sug.cleanup || []).forEach((r) => lines.push({ text: r, cleanup: true }));
+  const tail = [];
+  if (sug.band_display && sug.preset !== "Off") tail.push(`targeting ${sug.band_display}`);
+  if (sug.mud_db != null) tail.push(`mud ${sug.mud_db} dB`);
+  if (sug.harsh_start) tail.push(`preview @ ${fmtTime(sug.harsh_start)}`);
+  if (tail.length) lines.push({ text: tail.join(" · "), cleanup: false });
+
+  $("sug-sub").innerHTML = lines.map((l) =>
+    `<span class="rline${l.cleanup ? " cleanup" : ""}">${esc(l.text)}</span>`).join("");
+
+  const note = $("sug-note");
   if (sug.band_note) { note.textContent = "⚠ " + sug.band_note; note.classList.remove("hidden"); }
   else note.classList.add("hidden");
   banner.classList.remove("hidden");
 }
-const hideSuggest = () => $("suggest").classList.add("hidden");
+const hideSuggestConf = () => $("sug-conf").classList.add("hidden");
+
+const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
 
 function renderWarnings(warnings) {
   const el = $("warnings");
-  if (!warnings || !warnings.length) { el.classList.add("hidden"); el.innerHTML = ""; return; }
-  el.innerHTML = '<div class="w-head">Heads up</div><ul>'
-    + warnings.map((w) => `<li>${w.replace(/</g, "&lt;")}</li>`).join("") + "</ul>";
+  if (!warnings || !warnings.length) { el.classList.add("hidden"); return; }
+  $("warnings-body").innerHTML = warnings.map((w) => `<span class="hline">${esc(w)}</span>`).join("");
   el.classList.remove("hidden");
 }
 
-const esc = (s) => String(s).replace(/</g, "&lt;");
 function renderAssessment(a) {
   const el = $("assessment");
   if (!a) { el.classList.add("hidden"); return; }
@@ -339,9 +358,9 @@ async function runPreview(segmentChanged) {
     if (data.band) state.band = data.band;   // keep highlight synced to server
     lastSpectrum = data.spectrum; lastGr = data.gr_series;
     drawSpectrum(data.spectrum);
-    drawSpectrumDiff(data.spectrum);
     drawGRTimeline(data.gr_series);
     updateMetrics(data.metrics);
+    if (specgram) drawSpectrogram(specgram);  // refresh band markers
   } catch (err) {
     if (mySeq === state.seq) toast(err.message);
   } finally {
@@ -363,35 +382,69 @@ async function applyPreview(data, reloadOriginal) {
   if (wasPlaying) { await Promise.allSettled(A_ALL.filter((a) => a.src).map((a) => a.play())); }
 }
 
-function cls(el, ok, warn) {
-  el.classList.remove("good", "warn", "bad");
-  if (ok) el.classList.add("good"); else if (warn) el.classList.add("warn"); else el.classList.add("bad");
-}
+// ---------------------------------------------------------------------------
+// readouts + LED metering
+// ---------------------------------------------------------------------------
 function updateMetrics(m) {
-  $("m-in").textContent = m.input_lufs ?? "–";
-  $("m-tp").textContent = m.processed_tp.toFixed(1);
-  cls($("m-tp"), m.processed_tp <= m.ceiling_dbtp + 0.05, false);
-  const dh = m.deharsh_peak_db;  // peak gain reduction on the worst spike (<= 0)
+  const neg = (v) => `${v < 0 ? "−" : ""}${Math.abs(v).toFixed(1)}`;
+  $("m-in").textContent = m.input_lufs != null ? neg(m.input_lufs) : "−–";
+  $("m-out").textContent = neg(m.target_lufs);
+  $("m-tp").textContent = neg(m.processed_tp);
+  const tpEl = $("m-tp");
+  tpEl.classList.toggle("bad", m.processed_tp > m.ceiling_dbtp + 0.05);
+
+  const dh = Math.abs(m.deharsh_peak_db);  // peak gain reduction magnitude
   $("m-dh").textContent = dh.toFixed(1);
-  $("m-dh").title = dh < 0 ? `engaging ${m.deharsh_duty}% of the clip` : "de-harsh off / not engaging";
-  // reduction is always <= 0; green when actively working, neutral otherwise (never "bad")
-  $("m-dh").classList.remove("good", "warn", "bad");
-  if (dh <= -0.5) $("m-dh").classList.add("good");
+  $("m-dh").title = m.deharsh_peak_db < 0 ? `engaging ${m.deharsh_duty}% of the clip` : "de-harsh off / not engaging";
+
+  updateLadder(dh);
   updateLoudness(m);
 }
 
+function updateLadder(dh) {
+  const lad = $("led-ladder"), segs = [...lad.children], n = segs.length;
+  const lit = Math.round(Math.max(0, Math.min(1, dh / 8)) * n);
+  segs.forEach((s, i) => {
+    const on = i < lit, hot = i >= n - 2, warm = i >= n - 5;
+    const col = hot ? PAL.bad : warm ? PAL.warn : PAL.good;
+    s.style.opacity = on ? "1" : "0.16";
+    s.style.background = on ? col : "#454545";
+    s.style.boxShadow = on ? `0 0 5px ${col}` : "none";
+  });
+  $("gr-ladder-scale").textContent = `−${dh.toFixed(1)} dB FS`;
+}
+
+const pct = (v, lo, hi) => Math.max(0, Math.min(100, ((v - lo) / (hi - lo)) * 100));
+function updateLoudness(m) {
+  const LMIN = -24, LMAX = -6;
+  $("lufs-fill").style.width = `${pct(m.target_lufs, LMIN, LMAX)}%`;
+  $("lufs-target").style.left = `${pct(m.target_lufs, LMIN, LMAX)}%`;
+  if (m.input_lufs != null) $("lufs-in").style.left = `${pct(m.input_lufs, LMIN, LMAX)}%`;
+  const PMIN = -12, PMAX = 0;
+  $("tp-fill").style.width = `${pct(m.processed_tp, PMIN, PMAX)}%`;
+  $("tp-ceil").style.left = `${pct(m.ceiling_dbtp, PMIN, PMAX)}%`;
+}
+
 // ---------------------------------------------------------------------------
-// spectrum + gain-reduction timeline + spectral difference
+// canvas: helpers (device-pixel-ratio crisp, log-frequency axis)
+// ---------------------------------------------------------------------------
+function fitCanvas(cv, cssH) {
+  const dpr = window.devicePixelRatio || 1;
+  const W = cv.clientWidth || 640, H = cssH;
+  cv.width = W * dpr; cv.height = H * dpr;
+  const ctx = cv.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, W, H };
+}
+
+// ---------------------------------------------------------------------------
+// CH1 spectrum (before/after), CRT-styled — real server magnitudes
 // ---------------------------------------------------------------------------
 let lastSpectrum = null, lastGr = null;
 
 function drawSpectrum(spec) {
-  const cv = $("spectrum");
-  const dpr = window.devicePixelRatio || 1;
-  const W = cv.clientWidth || 640, H = 200;
-  cv.width = W * dpr; cv.height = H * dpr;
-  const ctx = cv.getContext("2d"); ctx.scale(dpr, dpr);
+  const { ctx, W, H } = fitCanvas($("spectrum"), 250);
   ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = PAL.bg; ctx.fillRect(0, 0, W, H);
 
   const f = spec.freqs, o = spec.orig_db, p = spec.proc_db;
   const fmin = f[0], fmax = f[f.length - 1];
@@ -399,122 +452,97 @@ function drawSpectrum(spec) {
   let dbMax = Math.max(...all) + 4, dbMin = Math.min(...all) - 2;
   if (dbMax - dbMin < 20) dbMin = dbMax - 20;
   const pad = 6;
-  const x = (freq) => pad + (Math.log10(freq) - Math.log10(fmin)) /
+  const x = (fr) => pad + (Math.log10(fr) - Math.log10(fmin)) /
     (Math.log10(fmax) - Math.log10(fmin)) * (W - 2 * pad);
   const y = (db) => pad + (1 - (db - dbMin) / (dbMax - dbMin)) * (H - 2 * pad);
 
-  // highlighted bands
-  const band = (lo, hi, color) => {
-    ctx.fillStyle = color;
-    ctx.fillRect(x(lo), pad, x(hi) - x(lo), H - 2 * pad);
-  };
-  band(200, 400, "rgba(251,191,36,.10)");
-  band(state.band[0], state.band[1], "rgba(124,92,255,.13)");
+  // highlighted bands (adaptive de-harsh + mud)
+  const bandFill = (lo, hi, c) => { ctx.fillStyle = c; ctx.fillRect(x(lo), pad, x(hi) - x(lo), H - 2 * pad); };
+  bandFill(200, 400, alpha(PAL.mud, 0.09));
+  bandFill(state.band[0], state.band[1], alpha(PAL.band, 0.10));
 
   // gridlines
-  ctx.strokeStyle = "rgba(255,255,255,.06)"; ctx.fillStyle = "rgba(255,255,255,.35)";
-  ctx.font = "10px system-ui"; ctx.lineWidth = 1;
-  [100, 1000, 10000].forEach((fr) => {
+  ctx.strokeStyle = alpha(PAL.grid, 0.9); ctx.fillStyle = PAL.muted;
+  ctx.font = "11px 'Space Mono', monospace"; ctx.lineWidth = 1;
+  [50, 100, 500, 1000, 5000, 10000].forEach((fr) => {
     if (fr < fmin || fr > fmax) return;
     const xx = x(fr);
-    ctx.beginPath(); ctx.moveTo(xx, pad); ctx.lineTo(xx, H - pad); ctx.stroke();
-    ctx.fillText(fr >= 1000 ? `${fr / 1000}k` : `${fr}`, xx + 3, H - pad - 2);
+    ctx.beginPath(); ctx.moveTo(xx, pad); ctx.lineTo(xx, H - 14); ctx.stroke();
+    ctx.fillText(fr >= 1000 ? `${fr / 1000}k` : `${fr}`, xx + 3, H - 3);
   });
 
-  const line = (arr, color, width, alpha) => {
-    ctx.strokeStyle = color; ctx.lineWidth = width; ctx.globalAlpha = alpha;
+  const curve = (arr, color, w, fill) => {
     ctx.beginPath();
-    for (let i = 0; i < f.length; i++) {
-      const xx = x(f[i]), yy = y(arr[i]);
-      i ? ctx.lineTo(xx, yy) : ctx.moveTo(xx, yy);
+    for (let i = 0; i < f.length; i++) { const xx = x(f[i]), yy = y(arr[i]); i ? ctx.lineTo(xx, yy) : ctx.moveTo(xx, yy); }
+    if (fill) {
+      ctx.lineTo(x(fmax), H); ctx.lineTo(x(fmin), H); ctx.closePath();
+      ctx.fillStyle = fill; ctx.fill();
+      ctx.beginPath();
+      for (let i = 0; i < f.length; i++) { const xx = x(f[i]), yy = y(arr[i]); i ? ctx.lineTo(xx, yy) : ctx.moveTo(xx, yy); }
     }
-    ctx.stroke(); ctx.globalAlpha = 1;
+    ctx.lineWidth = w; ctx.strokeStyle = color; ctx.lineJoin = "round";
+    if (w > 1.5) { ctx.shadowColor = color; ctx.shadowBlur = 9; } else { ctx.shadowBlur = 0; }
+    ctx.stroke(); ctx.shadowBlur = 0;
   };
-  line(o, "#6b7280", 1.5, 0.9);
-  line(p, "#22d3ee", 2, 1);
+
+  // emphasise processed unless the Original A/B source is active
+  if (active === "orig") {
+    curve(p, alpha(PAL.proc, 0.4), 1.3, null);
+    curve(o, PAL.orig, 2.4, alpha(PAL.orig, 0.18));
+  } else {
+    curve(o, alpha(PAL.orig, 0.6), 1.3, null);
+    curve(p, PAL.proc, 2.4, alpha(PAL.proc, 0.13));
+  }
 }
 
-// exact dB removed/added at each frequency (processed − original)
-function drawSpectrumDiff(spec) {
-  const cv = $("specdiff");
-  const dpr = window.devicePixelRatio || 1;
-  const W = cv.clientWidth || 640, H = 70;
-  cv.width = W * dpr; cv.height = H * dpr;
-  const ctx = cv.getContext("2d"); ctx.scale(dpr, dpr); ctx.clearRect(0, 0, W, H);
-
-  const f = spec.freqs, fmin = f[0], fmax = f[f.length - 1];
-  const diff = spec.proc_db.map((v, i) => v - spec.orig_db[i]);
-  let mag = Math.min(12, Math.max(2, Math.ceil(Math.max(...diff.map(Math.abs)))));
-  const pad = 6;
-  const x = (fr) => pad + (Math.log10(fr) - Math.log10(fmin)) /
-    (Math.log10(fmax) - Math.log10(fmin)) * (W - 2 * pad);
-  const y = (d) => pad + (1 - (Math.max(-mag, Math.min(mag, d)) + mag) / (2 * mag)) * (H - 2 * pad);
-
-  const band = (lo, hi, c) => { ctx.fillStyle = c; ctx.fillRect(x(lo), pad, x(hi) - x(lo), H - 2 * pad); };
-  band(200, 400, "rgba(251,191,36,.10)");
-  band(state.band[0], state.band[1], "rgba(124,92,255,.13)");
-
-  ctx.strokeStyle = "rgba(255,255,255,.18)"; ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(pad, y(0)); ctx.lineTo(W - pad, y(0)); ctx.stroke();
-  ctx.fillStyle = "rgba(255,255,255,.3)"; ctx.font = "9px system-ui";
-  ctx.fillText(`+${mag}`, 2, y(mag) + 8); ctx.fillText(`−${mag} dB`, 2, y(-mag) - 2);
-
-  ctx.beginPath();
-  for (let i = 0; i < f.length; i++) { const xx = x(f[i]), yy = y(diff[i]); i ? ctx.lineTo(xx, yy) : ctx.moveTo(xx, yy); }
-  ctx.lineTo(x(fmax), y(0)); ctx.lineTo(x(fmin), y(0)); ctx.closePath();
-  ctx.fillStyle = "rgba(251,191,36,.16)"; ctx.fill();
-  ctx.strokeStyle = "#fbbf24"; ctx.lineWidth = 2; ctx.beginPath();
-  for (let i = 0; i < f.length; i++) { const xx = x(f[i]), yy = y(diff[i]); i ? ctx.lineTo(xx, yy) : ctx.moveTo(xx, yy); }
-  ctx.stroke();
-}
-
-// de-harsh gain reduction (dB, <= 0) across the clip; playhead tracks playback
+// ---------------------------------------------------------------------------
+// CH2 de-harsh gain reduction across the clip (dB, <= 0); playhead tracks A/B
+// dashed line = static floor, filled envelope = static + dynamic spikes
+// ---------------------------------------------------------------------------
 function drawGRTimeline(series) {
-  const cv = $("grtl");
-  const dpr = window.devicePixelRatio || 1;
-  const W = cv.clientWidth || 640, H = 70;
-  cv.width = W * dpr; cv.height = H * dpr;
-  const ctx = cv.getContext("2d"); ctx.scale(dpr, dpr); ctx.clearRect(0, 0, W, H);
+  const { ctx, W, H } = fitCanvas($("grtl"), 70);
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = alpha(PAL.muted, 0.05); ctx.fillRect(0, 0, W, H);
 
-  const n = series.length, pad = 6;
-  const range = Math.min(18, Math.max(6, Math.ceil(-Math.min(0, ...series))));
-  const x = (i) => pad + (i / (n - 1)) * (W - 2 * pad);
-  const y = (db) => pad + (-Math.max(-range, Math.min(0, db)) / range) * (H - 2 * pad);
+  const n = series.length, pad = 0;
+  const range = Math.min(18, Math.max(8, Math.ceil(-Math.min(0, ...series))));
+  const x = (i) => (i / (n - 1)) * W;
+  const yv = (db) => (-Math.max(-range, Math.min(0, db)) / range) * H;
 
-  ctx.strokeStyle = "rgba(255,255,255,.06)"; ctx.fillStyle = "rgba(255,255,255,.3)";
-  ctx.font = "9px system-ui"; ctx.lineWidth = 1;
-  for (let g = Math.max(3, Math.round(range / 3)); g < range; g += Math.max(3, Math.round(range / 3))) {
-    const yy = y(-g); ctx.beginPath(); ctx.moveTo(pad, yy); ctx.lineTo(W - pad, yy); ctx.stroke();
-    ctx.fillText(`−${g}`, 2, yy - 1);
-  }
-  ctx.strokeStyle = "rgba(255,255,255,.15)"; ctx.beginPath();
-  ctx.moveTo(pad, y(0)); ctx.lineTo(W - pad, y(0)); ctx.stroke();
+  // static floor (the always-on cut), scaled by intensity, dashed
+  const floor = Math.min(range, Math.abs(state.static) * (state.intensity / 100));
+  const yFloor = (floor / range) * H;
+  ctx.strokeStyle = alpha(PAL.muted, 0.5); ctx.setLineDash([4, 4]);
+  ctx.beginPath(); ctx.moveTo(0, yFloor); ctx.lineTo(W, yFloor); ctx.stroke(); ctx.setLineDash([]);
 
-  ctx.beginPath(); ctx.moveTo(x(0), y(0));
-  for (let i = 0; i < n; i++) ctx.lineTo(x(i), y(series[i]));
-  ctx.lineTo(x(n - 1), y(0)); ctx.closePath();
-  const grad = ctx.createLinearGradient(0, 0, 0, H);
-  grad.addColorStop(0, "rgba(124,92,255,.12)"); grad.addColorStop(1, "rgba(124,92,255,.45)");
-  ctx.fillStyle = grad; ctx.fill();
-  ctx.strokeStyle = "#7c5cff"; ctx.lineWidth = 1.5; ctx.beginPath();
-  for (let i = 0; i < n; i++) { const xx = x(i), yy = y(series[i]); i ? ctx.lineTo(xx, yy) : ctx.moveTo(xx, yy); }
-  ctx.stroke();
+  // filled envelope
+  ctx.beginPath(); ctx.moveTo(0, 0);
+  for (let i = 0; i < n; i++) ctx.lineTo(x(i), yv(series[i]));
+  ctx.lineTo(W, 0); ctx.closePath();
+  ctx.fillStyle = alpha(PAL.accent, 0.22); ctx.fill();
 
-  $("gr-scale").textContent = `0 to −${range} dB`;
+  // trace with glow
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) { const xx = x(i), yy = yv(series[i]); i ? ctx.lineTo(xx, yy) : ctx.moveTo(xx, yy); }
+  ctx.strokeStyle = PAL.accent; ctx.lineWidth = 1.6;
+  ctx.shadowColor = PAL.accent; ctx.shadowBlur = 7; ctx.stroke(); ctx.shadowBlur = 0;
+
+  $("gr-scale").textContent = `−${range} dB`;
 }
 
 // ---------------------------------------------------------------------------
-// whole-track spectrogram (input harshness map)
+// CH3 whole-track harshness waterfall — real spectrogram, amber heat ramp
 // ---------------------------------------------------------------------------
-const MAGMA = (() => {
-  const a = [[0, 0, 0, 4], [.25, 81, 18, 124], [.5, 183, 55, 121], [.75, 252, 137, 97], [1, 252, 253, 191]];
+function heatColor(t) {
+  t = Math.pow(Math.max(0, Math.min(1, t)), 1.7);   // gamma so low-mid energy doesn't wash it out
+  const S = [[5, 6, 5], [22, 14, 6], [70, 40, 10], [150, 84, 20], [230, 150, 50], [255, 214, 130]];
+  const n = S.length - 1, pos = t * n, i = Math.floor(pos), fr = pos - i;
+  const a = S[i], b = S[Math.min(i + 1, n)];
+  return [Math.round(a[0] + (b[0] - a[0]) * fr), Math.round(a[1] + (b[1] - a[1]) * fr), Math.round(a[2] + (b[2] - a[2]) * fr)];
+}
+const HEAT_LUT = (() => {
   const r = new Uint8Array(256), g = new Uint8Array(256), b = new Uint8Array(256);
-  for (let i = 0; i < 256; i++) {
-    const x = i / 255; let lo = a[0], hi = a[a.length - 1];
-    for (let k = 0; k < a.length - 1; k++) if (x >= a[k][0] && x <= a[k + 1][0]) { lo = a[k]; hi = a[k + 1]; break; }
-    const t = (x - lo[0]) / ((hi[0] - lo[0]) || 1);
-    r[i] = lo[1] + (hi[1] - lo[1]) * t; g[i] = lo[2] + (hi[2] - lo[2]) * t; b[i] = lo[3] + (hi[3] - lo[3]) * t;
-  }
+  for (let i = 0; i < 256; i++) { const c = heatColor(i / 255); r[i] = c[0]; g[i] = c[1]; b[i] = c[2]; }
   return { r, g, b };
 })();
 let specgram = null;  // {n_time,n_freq,fmin,fmax,bytes}
@@ -526,19 +554,15 @@ function decodeSpectrogram(sg) {
 }
 
 function drawSpectrogram(sg) {
-  const cv = $("specgram"), dpr = window.devicePixelRatio || 1;
-  const W = cv.clientWidth || 900, H = 200;
-  cv.width = W * dpr; cv.height = H * dpr;
-  const ctx = cv.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
+  const { ctx, W, H } = fitCanvas($("specgram"), 94);
   const T = sg.n_time, F = sg.n_freq, bytes = sg.bytes;
   const off = document.createElement("canvas"); off.width = T; off.height = F;
   const octx = off.getContext("2d"), img = octx.createImageData(T, F);
   for (let fi = 0; fi < F; fi++) {
     const dst = (F - 1 - fi) * T;                 // invert: high freq at top
     for (let ti = 0; ti < T; ti++) {
-      const v = bytes[fi * T + ti], p = (dst + ti) * 4;
-      img.data[p] = MAGMA.r[v]; img.data[p + 1] = MAGMA.g[v]; img.data[p + 2] = MAGMA.b[v]; img.data[p + 3] = 255;
+      const v = bytes[fi * T + ti], q = (dst + ti) * 4;
+      img.data[q] = HEAT_LUT.r[v]; img.data[q + 1] = HEAT_LUT.g[v]; img.data[q + 2] = HEAT_LUT.b[v]; img.data[q + 3] = 255;
     }
   }
   octx.putImageData(img, 0, 0);
@@ -548,10 +572,14 @@ function drawSpectrogram(sg) {
   const lo = Math.log10(sg.fmin), hi = Math.log10(sg.fmax);
   const yOf = (fr) => (1 - (Math.log10(fr) - lo) / (hi - lo)) * H;
   const [bLo, bHi] = state.band;
-  ctx.fillStyle = "rgba(124,92,255,.16)";
-  ctx.fillRect(0, yOf(bHi), W, yOf(bLo) - yOf(bHi));             // targeted de-harsh band
-  ctx.strokeStyle = "rgba(124,92,255,.55)"; ctx.lineWidth = 1;
-  [bLo, bHi].forEach((fr) => { const y = yOf(fr); ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); });
+  ctx.strokeStyle = "rgba(255,220,160,.6)"; ctx.setLineDash([5, 4]); ctx.lineWidth = 1;
+  [bLo, bHi].forEach((fr) => {
+    if (fr < sg.fmin || fr > sg.fmax) return;
+    const yy = yOf(fr); ctx.beginPath(); ctx.moveTo(0, yy); ctx.lineTo(W, yy); ctx.stroke();
+  });
+  ctx.setLineDash([]);
+  ctx.fillStyle = "rgba(255,230,180,.95)"; ctx.font = "10px 'Space Mono', monospace";
+  ctx.fillText(`${(bLo / 1000).toFixed(1)}–${(bHi / 1000).toFixed(1)} kHz`, 6, yOf(bHi) - 4);
 
   const ax = $("sg-yaxis"); ax.innerHTML = "";
   [100, 1000, 3000, 6000, 10000].forEach((fr) => {
@@ -563,42 +591,38 @@ function drawSpectrogram(sg) {
   });
 }
 
-// ---------------------------------------------------------------------------
-// graphical loudness / true-peak meter
-// ---------------------------------------------------------------------------
-const pct = (v, lo, hi) => Math.max(0, Math.min(100, ((v - lo) / (hi - lo)) * 100));
-function updateLoudness(m) {
-  if (m.input_lufs == null) return;
-  const LMIN = -24, LMAX = -6;
-  $("lufs-fill").style.width = `${pct(m.target_lufs, LMIN, LMAX)}%`;
-  $("lufs-target").style.left = `${pct(m.target_lufs, LMIN, LMAX)}%`;
-  $("lufs-in").style.left = `${pct(m.input_lufs, LMIN, LMAX)}%`;
-  $("lufs-txt").textContent = `${m.input_lufs}→${m.target_lufs}`;
-  const PMIN = -18, PMAX = 0;
-  $("tp-fill").style.width = `${pct(m.processed_tp, PMIN, PMAX)}%`;
-  $("tp-ceil").style.left = `${pct(m.ceiling_dbtp, PMIN, PMAX)}%`;
-  $("tp2-txt").textContent = `${m.processed_tp}`;
+// NO SIGNAL scope line
+function drawDropLine() {
+  const cv = $("dropline"); if (!cv) return;
+  const { ctx, W, H } = fitCanvas(cv, 70);
+  ctx.clearRect(0, 0, W, H);
+  ctx.strokeStyle = PAL.accent; ctx.lineWidth = 1.6; ctx.shadowColor = PAL.accent; ctx.shadowBlur = 8;
+  ctx.beginPath();
+  for (let px = 0; px <= W; px += 2) { ctx.lineTo(px, H / 2 + Math.sin(px * 0.25) * (px % 60 < 3 ? 6 : 0.6)); }
+  ctx.stroke(); ctx.shadowBlur = 0;
 }
 
 let _resizeT = null;
 window.addEventListener("resize", () => {
   clearTimeout(_resizeT);
   _resizeT = setTimeout(() => {
-    if (lastSpectrum) { drawSpectrum(lastSpectrum); drawSpectrumDiff(lastSpectrum); }
+    if ($("screen-drop").style.display !== "none") { drawDropLine(); return; }
+    if (lastSpectrum) drawSpectrum(lastSpectrum);
     if (lastGr) drawGRTimeline(lastGr);
     if (specgram) drawSpectrogram(specgram);
   }, 150);
 });
 
 // ---------------------------------------------------------------------------
-// commit: full track
+// commit: full track -> scorecard + download
 // ---------------------------------------------------------------------------
 $("commit").addEventListener("click", async () => {
   if (!state.id) return;
-  const btn = $("commit"); btn.disabled = true;
-  const st = $("commit-status");
-  st.classList.remove("hidden");
-  st.innerHTML = `<span class="spinner"></span> Processing full track (${fmtTime(state.duration)})…`;
+  const btn = $("commit"), note = $("commit-note"), st = $("commit-status");
+  btn.disabled = true;
+  btn.innerHTML = "&#9646;&#9646; RENDERING…";
+  note.textContent = `processing full track (${fmtTime(state.duration)})…`;
+  st.classList.add("hidden"); st.innerHTML = "";
   try {
     const r = await fetch("/process", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -610,19 +634,29 @@ $("commit").addEventListener("click", async () => {
     });
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || "processing failed");
+    const out = data.metrics.output_lufs;
     const rows = (data.scorecard || []).map((row) =>
-      `<li class="${row.ok ? 'sc-ok' : 'sc-no'}"><span class="sc-mark">${row.ok ? '✓' : '✗'}</span>`
-      + `<span class="sc-label">${row.label}</span>`
-      + `<span class="sc-detail">${String(row.detail).replace(/</g, "&lt;")}</span></li>`).join("");
-    st.innerHTML = `<div class="sc-head">✅ Done — report card</div>`
+      `<li class="${row.ok ? "sc-ok" : "sc-no"}"><span class="sc-mark">${row.ok ? "✓" : "✗"}</span>`
+      + `<span class="sc-text"><b>${esc(row.label)}</b> — <span class="sc-detail">${esc(row.detail)}</span></span></li>`).join("");
+    st.innerHTML = `<div class="sc-head">✓ DONE — REPORT CARD</div>`
       + `<ul class="scorecard">${rows}</ul>`
-      + `<a class="sc-dl" href="/download/${data.download_id}">Download processed WAV</a>`;
+      + `<a class="sc-dl" href="/download/${data.download_id}">▼ DOWNLOAD .WAV</a>`;
+    st.classList.remove("hidden");
+    btn.innerHTML = "&#10003; DONE — SEE REPORT";
+    note.textContent = `rendered ${state.preset} · ${state.intensity}% → ${out != null ? out.toFixed(1) : "–"} LUFS`;
     st.querySelector(".sc-dl").click();
   } catch (err) {
-    st.innerHTML = ""; st.textContent = "⚠ " + err.message;
+    st.innerHTML = `<div class="sc-err">⚠ ${esc(err.message)}</div>`;
+    st.classList.remove("hidden");
+    btn.innerHTML = "&#9660; PROCESS FULL TRACK";
+    note.textContent = "renders whole track · these exact settings";
     toast(err.message);
   } finally {
     btn.disabled = false;
+    clearTimeout($("commit")._rt);
+    $("commit")._rt = setTimeout(() => {
+      btn.innerHTML = "&#9660; PROCESS FULL TRACK";
+    }, 4000);
   }
 });
 
@@ -633,5 +667,6 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
+// boot: NO SIGNAL until a file is analysed
 updateAdvancedLabels();
-syncAdvancedDisabled();
+showDrop(true);
