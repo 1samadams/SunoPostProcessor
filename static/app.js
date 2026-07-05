@@ -272,6 +272,9 @@ function applySuggestion(sug) {
   $("suggest-sub").textContent = parts.join(" · ");
   const ul = $("suggest-reasons"); ul.innerHTML = "";
   (sug.reasons || []).forEach((r) => { const li = document.createElement("li"); li.textContent = r; ul.appendChild(li); });
+  (sug.cleanup || []).forEach((r) => {
+    const li = document.createElement("li"); li.textContent = "+ " + r; li.className = "sug-cleanup"; ul.appendChild(li);
+  });
   const note = $("suggest-note");
   if (sug.band_note) { note.textContent = "⚠ " + sug.band_note; note.classList.remove("hidden"); }
   else note.classList.add("hidden");
@@ -593,16 +596,14 @@ $("commit").addEventListener("click", async () => {
     });
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || "processing failed");
-    const m = data.metrics;
-    const a = document.createElement("a");
-    a.href = `/download/${data.download_id}`;
-    a.textContent = "Download processed WAV";
-    st.innerHTML =
-      `✅ Done — output <strong>${m.output_lufs ?? "–"} LUFS</strong>, `
-      + `true peak <strong>${m.output_tp} dBTP</strong> `
-      + `(was ${m.input_lufs ?? "–"} LUFS / ${m.input_tp} dBTP). `;
-    st.appendChild(a);
-    a.click();
+    const rows = (data.scorecard || []).map((row) =>
+      `<li class="${row.ok ? 'sc-ok' : 'sc-no'}"><span class="sc-mark">${row.ok ? '✓' : '✗'}</span>`
+      + `<span class="sc-label">${row.label}</span>`
+      + `<span class="sc-detail">${String(row.detail).replace(/</g, "&lt;")}</span></li>`).join("");
+    st.innerHTML = `<div class="sc-head">✅ Done — report card</div>`
+      + `<ul class="scorecard">${rows}</ul>`
+      + `<a class="sc-dl" href="/download/${data.download_id}">Download processed WAV</a>`;
+    st.querySelector(".sc-dl").click();
   } catch (err) {
     st.innerHTML = ""; st.textContent = "⚠ " + err.message;
     toast(err.message);

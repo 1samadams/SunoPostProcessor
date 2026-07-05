@@ -359,6 +359,78 @@ def cut_mud(audio: np.ndarray, sr: int, gain_db: float = _MUD_GAIN_DB,
 
 
 # ---------------------------------------------------------------------------
+# cleanup: sub-bass rumble high-pass + clip repair (smart-tuner controlled)
+# ---------------------------------------------------------------------------
+def highpass(audio: np.ndarray, sr: int, cutoff_hz: float, order: int = 2) -> np.ndarray:
+    """Zero-phase Butterworth high-pass to remove inaudible subsonic rumble.
+
+    Frees loudness headroom (the sub energy eats true-peak/limiter margin) with
+    no audible change. Zero-phase so the low end isn't smeared. No-op if the
+    cutoff doesn't fit under Nyquist."""
+    if cutoff_hz <= 0.0 or cutoff_hz >= 0.45 * sr:
+        return np.array(audio, dtype=np.float64, copy=True)
+    audio2d, was_mono = _as_2d(audio)
+    sos = signal.butter(order, cutoff_hz, btype="highpass", fs=sr, output="sos")
+    out = signal.sosfiltfilt(sos, audio2d, axis=0)
+    return _restore_shape(out, was_mono)
+
+
+def declip(audio: np.ndarray, sr: int, thresh: float = 0.997):
+    """Reconstruct short clipped (flat-topped) runs by cubic interpolation.
+
+    Returns (repaired_audio, n_samples_repaired). Only touches runs shorter
+    than ~20 ms bounded by unclipped samples; longer sustained clipping is left
+    alone (can't be reconstructed). Reconstructed peaks overshoot ±1 (restoring
+    the lost peak) and are clamped, then the downstream true-peak limiter brings
+    them under the ceiling. A gentle repair, not perfect declipping.
+    """
+    audio2d, was_mono = _as_2d(audio)
+    out = audio2d.copy()
+    max_run = int(sr * 0.02)
+    total = 0
+    for ch in range(out.shape[1]):
+        x = out[:, ch]
+        clipped = np.abs(x) >= thresh
+        if not clipped.any():
+            continue
+        idx = np.where(clipped)[0]
+        groups = np.split(idx, np.where(np.diff(idx) > 1)[0] + 1)
+        for g in groups:
+            s, e = int(g[0]), int(g[-1])
+            if e - s + 1 > max_run:
+                continue
+            lo, hi = s - 3, e + 3
+            if lo < 1 or hi >= len(x) - 1:
+                continue
+            xs = np.concatenate([np.arange(lo, s), np.arange(e + 1, hi + 1)])
+            coeffs = np.polyfit(xs, x[xs], min(3, len(xs) - 1))
+            fill = np.polyval(coeffs, np.arange(s, e + 1))
+            x[s:e + 1] = np.clip(fill, -1.3, 1.3)
+            total += e - s + 1
+    return _restore_shape(out, was_mono), total
+
+
+def harshness_index(audio: np.ndarray, sr: int) -> int:
+    """0-100 objective 'sharpness' score: how much the 2.5-8 kHz region pokes
+    above the mids (density, bandwidth-fair). ~30 = pink-neutral, higher =
+    harsher. Compare before/after to prove the de-harsh did something.
+
+    The mid reference is 600-2000 Hz (NOT 200-2000): it must exclude the
+    200-400 Hz mud band, otherwise the mud cut lowers the reference and makes
+    the track look *harsher* after processing even though the harsh band fell.
+    """
+    mono = audio if audio.ndim == 1 else audio.mean(axis=1)
+    f, psd = signal.welch(mono, fs=sr, nperseg=int(min(8192, len(mono))))
+
+    def dens(lo, hi):
+        sel = (f >= lo) & (f < min(hi, sr / 2.0))
+        return 10.0 * np.log10(float(psd[sel].mean()) + 1e-20) if sel.any() else -120.0
+
+    sharp = dens(2500, 8000) - dens(600, 2000)   # ~ -6 dB neutral (top rolls off)
+    return int(round(float(np.clip((sharp + 18.0) / 30.0 * 100.0, 0.0, 100.0))))
+
+
+# ---------------------------------------------------------------------------
 # step 3: loudness normalization (-14 LUFS / -1 dBTP)
 # ---------------------------------------------------------------------------
 def _true_peak_limit(audio2d: np.ndarray, sr: int, ceiling_lin: float,
@@ -436,14 +508,22 @@ def process(audio: np.ndarray, sr: int, preset: str = "Standard",
             ceiling_dbtp: float = -1.0, threshold_pctl: float | None = None,
             ratio: float | None = None, env_db_ref: np.ndarray | None = None,
             measured_lufs: float | None = None, static_db: float | None = None,
-            band: tuple | None = None, mud_gain: float | None = None) -> np.ndarray:
-    """Run the full chain: de-harsh -> mud cut -> loudness normalize.
+            band: tuple | None = None, mud_gain: float | None = None,
+            hpf_hz: float | None = None, do_declip: bool = False) -> np.ndarray:
+    """Run the full chain: [declip] -> de-harsh -> mud cut -> [sub HPF] ->
+    loudness normalize.
 
     `threshold_pctl`/`ratio`/`env_db_ref`/`static_db`/`band` pass through to
-    deharsh(), `mud_gain` to cut_mud(), and `measured_lufs` to
-    normalize_loudness() -- the smart tuner supplies band/mud_gain per track.
+    deharsh(), `mud_gain` to cut_mud(), `measured_lufs` to normalize_loudness().
+    `do_declip` repairs source clipping first; `hpf_hz` removes subsonic rumble
+    before normalization -- the smart tuner enables both only when detected.
     """
-    x = deharsh(audio, sr, preset, intensity, threshold_pctl, ratio, env_db_ref, static_db, band)
+    x = np.asarray(audio, dtype=np.float64)
+    if do_declip:
+        x, _ = declip(x, sr)
+    x = deharsh(x, sr, preset, intensity, threshold_pctl, ratio, env_db_ref, static_db, band)
     x = cut_mud(x, sr, gain_db=_MUD_GAIN_DB if mud_gain is None else mud_gain)
+    if hpf_hz:
+        x = highpass(x, sr, hpf_hz)
     x = normalize_loudness(x, sr, target_lufs, ceiling_dbtp, measured_lufs)
     return x
