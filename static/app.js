@@ -129,6 +129,7 @@ async function doUpload(file) {
     $("start").max = Math.max(0, data.duration - state.dur).toFixed(1);
     $("start").value = 0; $("start-val").textContent = "0:00";
     $("workspace").classList.remove("hidden");
+    renderAssessment(data.assessment);
     renderWarnings(data.warnings);
     applySuggestion(data.suggest);   // sets state.band before we draw the map
     if (data.spectrogram) {
@@ -287,6 +288,19 @@ function renderWarnings(warnings) {
   if (!warnings || !warnings.length) { el.classList.add("hidden"); el.innerHTML = ""; return; }
   el.innerHTML = '<div class="w-head">Heads up</div><ul>'
     + warnings.map((w) => `<li>${w.replace(/</g, "&lt;")}</li>`).join("") + "</ul>";
+  el.classList.remove("hidden");
+}
+
+const esc = (s) => String(s).replace(/</g, "&lt;");
+function renderAssessment(a) {
+  const el = $("assessment");
+  if (!a) { el.classList.add("hidden"); return; }
+  $("assess-headline").textContent = a.headline;
+  $("assess-items").innerHTML = (a.items || []).map((it) =>
+    `<div class="assess-item"><span class="assess-topic">${esc(it.topic)}</span>`
+    + `<span class="assess-plain">${esc(it.plain)}</span>`
+    + `<span class="assess-tech">${esc(it.tech)}</span></div>`).join("");
+  $("assess-plan").innerHTML = `<strong>${esc(a.plan).replace("Plan:", "Plan:</strong>")}`;
   el.classList.remove("hidden");
 }
 

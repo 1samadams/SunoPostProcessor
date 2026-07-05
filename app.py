@@ -156,7 +156,14 @@ def _detect_band(f: np.ndarray, psd: np.ndarray, sr: int):
     trend = np.polyval(np.polyfit(logf, pp, 2), logf)
     excess = np.clip(pp - trend, 0.0, None)
 
-    reg = ff >= 2500.0
+    # Only chase a resonance that carries real ENERGY. On a dark track the top
+    # rolls off steeply, so a tiny bump in the near-silent air region shows a
+    # big *relative* excess above the trend -- but it's not harshness. Gate the
+    # search to frequencies within 12 dB of the upper-mid level; else the band
+    # is meaningless (and de-harsh is Off on such tracks anyway).
+    mid_sel = (f >= 600.0) & (f < 2000.0)
+    mid_ref = 10.0 * np.log10(float(psd[mid_sel].mean()) + 1e-20) if mid_sel.any() else -60.0
+    reg = (ff >= 2500.0) & (pp >= mid_ref - 12.0)
     if not reg.any() or float(excess[reg].max()) < 1.2:
         return _DEFAULT_BAND, None, float(excess[reg].max()) if reg.any() else 0.0
 
@@ -230,22 +237,32 @@ def _analyze(audio: np.ndarray, sr: int, duration: float):
     mono = audio if audio.ndim == 1 else audio.mean(axis=1)
     f, psd = signal.welch(mono, fs=sr, nperseg=int(min(8192, len(mono))))
 
-    band, f0, res_h = _detect_band(f, psd, sr)
-    mud_gain = _detect_mud(f, psd)
-    env_db_ref = dsp.band_envelope_db(audio, sr, band=band)
-    harsh_start = _harsh_start(env_db_ref, duration)
-
     def dens(lo, hi):
         sel = (f >= lo) & (f < min(hi, sr / 2.0))
         return 10.0 * np.log10(float(psd[sel].mean()) + 1e-20) if sel.any() else -120.0
 
-    brightness = float(dens(band[0], band[1]) - dens(200, 2000))
-    crest = (float(np.percentile(env_db_ref, 95) - np.percentile(env_db_ref, 50))
-             if np.asarray(env_db_ref).size > 4 else 8.0)
+    band, f0, res_h = _detect_band(f, psd, sr)
+    mud_gain = _detect_mud(f, psd)
+
+    # preset STRENGTH is decided from a FIXED broad harsh region (2.5-9 kHz vs
+    # the mids), NOT the detected band -- so it catches harshness wherever it
+    # sits and stays stable regardless of where band detection lands. The band
+    # only decides WHERE to apply the cut, not whether to.
+    brightness = float(dens(2500, 9000) - dens(200, 2000))
 
     # preset STRENGTH from brightness (pink-referenced boundaries)
     bounds = [(-13, "Off"), (-10, "Gentle"), (-5, "Standard"), (1e9, "Aggressive")]
     preset = next(name for thr, name in bounds if brightness < thr)
+
+    # a tame track has no resonance worth chasing -> keep the default band, so
+    # if you override Off->a preset it de-harshes the sensible 3-6 kHz.
+    if preset == "Off":
+        band, f0, res_h = _DEFAULT_BAND, None, 0.0
+    env_db_ref = dsp.band_envelope_db(audio, sr, band=band)  # matches final band
+    harsh_start = _harsh_start(env_db_ref, duration)
+    crest = (float(np.percentile(env_db_ref, 95) - np.percentile(env_db_ref, 50))
+             if np.asarray(env_db_ref).size > 4 else 8.0)
+
     reasons = [("band already tame" if preset == "Off" else
                 {"Gentle": "mild", "Standard": "moderate", "Aggressive": "hot"}[preset]
                 + f" band energy ({brightness:+.0f} dB vs mids)")]
@@ -326,6 +343,118 @@ def _input_health(audio: np.ndarray, sr: int, input_lufs, input_tp: float) -> li
             warnings.append(f"Peaky track — normalizing to −14 would hit {predicted_tp:+.0f} dBTP, "
                             "so it'll land a touch under −14 to keep peaks ≤ −1 dBTP (by design).")
     return warnings
+
+
+def _pick(value, table):
+    """Return the first label whose threshold `value` is below (table sorted)."""
+    for thr, label in table:
+        if value < thr:
+            return label
+    return table[-1][1]
+
+
+def _assessment(audio: np.ndarray, sr: int, input_lufs, input_tp: float,
+                sug: dict, harsh_idx: int, mono_corr: float) -> dict:
+    """An experienced engineer's read of the track: plain-English + technical.
+
+    Every line ties a measurement to an interpretation. Purpose: tell the user
+    what they've got and what (if anything) needs doing -- without needing ears.
+    """
+    mono = audio if audio.ndim == 1 else audio.mean(axis=1)
+    f, psd = signal.welch(mono, fs=sr, nperseg=int(min(8192, len(mono))))
+
+    def d(lo, hi):
+        sel = (f >= lo) & (f < min(hi, sr / 2.0))
+        return 10.0 * np.log10(float(psd[sel].mean()) + 1e-20) if sel.any() else -120.0
+
+    low, mid, top = d(60, 200), d(600, 2000), d(5000, 10000)
+    peak = float(np.max(np.abs(audio)))
+    rms = float(np.sqrt(np.mean(audio ** 2)))
+    crest = 20.0 * np.log10(peak / (rms + 1e-12) + 1e-12)
+    rolloff = mid - top                 # dB the top rolls off vs the mids
+    low_bal = low - mid                 # low-end weight vs mids
+    lufs = input_lufs if input_lufs is not None else -14.0
+    br = sug["measured"]["brightness"]
+    band_crest = sug["measured"]["crest"]
+    rumble = any("rumble" in c for c in sug.get("cleanup", []))
+    clips = any("clipped" in c for c in sug.get("cleanup", [])) or input_tp > 0.0
+
+    items = []
+
+    # --- TONE / harshness ---
+    tone = _pick(harsh_idx, [(25, "Dark, smooth top end — nothing harsh or fatiguing up there."),
+                             (45, "Balanced, natural top end."),
+                             (65, "Bright and forward up top — a little edge."),
+                             (1e9, "Harsh/sizzly up top — pronounced high-mid energy.")])
+    if harsh_idx >= 45:
+        tone += (" It reads as a steady sheen." if band_crest < 7
+                 else " It reads as transient sibilance/sizzle." if band_crest > 12 else "")
+    items.append({"topic": "Tone", "plain": tone,
+                  "tech": f"3–6 kHz {br:+.0f} dB vs mids · harshness index {harsh_idx}/100 · "
+                          f"top rolls off ~{rolloff:.0f} dB from mids to 5–10 kHz."})
+
+    # --- LOUDNESS + DYNAMICS ---
+    off = lufs - (-14.0)
+    loud = ("Already sitting right at streaming loudness." if abs(off) < 1.0 else
+            "Hotter than streaming target — we'll ease it down." if off > 1.0 else
+            "Quieter than streaming target — we'll bring it up.")
+    dyn = _pick(crest, [(8.5, "It's been mastered loud — very little dynamic range left."),
+                        (12.0, "Moderately compressed, but still breathing."),
+                        (1e9, "Healthy, punchy dynamics.")])
+    items.append({"topic": "Loudness", "plain": f"{loud} {dyn}",
+                  "tech": f"{lufs:.1f} LUFS integrated · {input_tp:+.1f} dBTP · crest ~{crest:.0f} dB · "
+                          f"target −14 LUFS / −1 dBTP."})
+
+    # --- LOW END ---
+    lowend = _pick(low_bal, [(-2, "Light, lean low end."), (5, "Balanced low end."),
+                             (12, "Full, warm low end."), (1e9, "Big, bass-forward low end.")])
+    lowend += " Some subsonic rumble to clean up." if rumble else " No subsonic rumble."
+    if sug.get("mud_db") is not None and sug["mud_db"] <= -2.0:
+        lowend += " A touch of low-mid mud we'll ease."
+    items.append({"topic": "Low end", "plain": lowend,
+                  "tech": f"60–200 Hz {low_bal:+.0f} dB vs mids · mud cut {sug.get('mud_db')} dB"
+                          + (f" · HPF 30 Hz" if rumble else "") + "."})
+
+    # --- STEREO ---
+    stereo = _pick(mono_corr, [(0.2, "Out-of-phase content — it'll partly cancel on mono speakers."),
+                               (0.5, "Very wide — worth checking on a phone speaker."),
+                               (0.85, "Nicely wide and fully mono-compatible."),
+                               (1e9, "Fairly centred/narrow — rock-solid in mono.")])
+    items.append({"topic": "Stereo", "plain": stereo,
+                  "tech": f"L/R correlation {mono_corr:+.2f}."})
+
+    # --- TECHNICAL ---
+    if clips:
+        tech_plain = "Source clips — we'll repair the flat-topped peaks."
+    elif input_tp > -1.0:
+        tech_plain = "Peaks are hot but under 0 dBFS; the ceiling will tuck them to −1 dBTP."
+    else:
+        tech_plain = "Clean bill of health — no clipping, DC offset, or true-peak issues."
+    items.append({"topic": "Technical", "plain": tech_plain,
+                  "tech": f"peak {20*np.log10(peak+1e-12):+.1f} dBFS · true peak {input_tp:+.1f} dBTP."})
+
+    # --- HEADLINE + PLAN ---
+    preset = sug["preset"]
+    if preset == "Off" and harsh_idx < 30 and not clips:
+        headline = ("Solid, release-ready track — clean tone, no harshness. "
+                    "The main job here is matching it to streaming loudness.")
+    elif preset in ("Standard", "Aggressive"):
+        headline = "A good master with some harshness up top worth taming before release."
+    elif preset == "Gentle" or (preset == "Off" and harsh_idx >= 30):
+        headline = "A strong track with just a hint of edge up top — a light touch will polish it."
+    else:
+        headline = "A solid track — mostly a matter of consistency and loudness."
+
+    plan_bits = []
+    if preset == "Off":
+        plan_bits.append("leave the tone alone (nothing to de-harsh)")
+    else:
+        plan_bits.append(f"de-harsh {sug['band_display']} ({preset})")
+    plan_bits += sug.get("cleanup", [])
+    plan_bits.append("normalize to −14 LUFS / −1 dBTP")
+    plan = "Plan: " + "; ".join(plan_bits) + "."
+
+    return {"headline": headline, "items": items, "plan": plan}
 
 
 def _controls_from_request(data: dict):
@@ -434,8 +563,17 @@ def upload():
         app.logger.exception("health failed")
         warnings = []
 
+    assessment = None
+    if suggest is not None:
+        try:
+            assessment = _assessment(audio, sr, meta["input_lufs"], float(input_tp),
+                                     suggest, dsp.harshness_index(audio, sr),
+                                     _mono_correlation(np.asarray(audio, dtype=np.float64)))
+        except Exception:  # noqa: BLE001 -- assessment is optional
+            app.logger.exception("assessment failed")
+
     return jsonify({"id": uid, "filename": upload.filename, "spectrogram": spectrogram,
-                    "suggest": suggest, "warnings": warnings, **meta})
+                    "suggest": suggest, "warnings": warnings, "assessment": assessment, **meta})
 
 
 def _read_segment(path: str, start_s: float, dur_s: float):
