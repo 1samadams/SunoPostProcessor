@@ -350,8 +350,10 @@ function updateMetrics(m) {
   cls($("m-tp"), m.processed_tp <= m.ceiling_dbtp + 0.05, false);
   const dh = m.deharsh_peak_db;  // peak gain reduction on the worst spike (<= 0)
   $("m-dh").textContent = dh.toFixed(1);
-  $("m-dh").title = `engaging ${m.deharsh_duty}% of the clip`;
-  cls($("m-dh"), dh <= -0.5, dh < 0);
+  $("m-dh").title = dh < 0 ? `engaging ${m.deharsh_duty}% of the clip` : "de-harsh off / not engaging";
+  // reduction is always <= 0; green when actively working, neutral otherwise (never "bad")
+  $("m-dh").classList.remove("good", "warn", "bad");
+  if (dh <= -0.5) $("m-dh").classList.add("good");
   updateLoudness(m);
 }
 
