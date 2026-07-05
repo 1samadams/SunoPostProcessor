@@ -238,6 +238,16 @@ input[type=range]:disabled { opacity: .45; }
 .primary:disabled { opacity: .55; cursor: default; filter: none; }
 .commit-status { margin-top: .8rem; padding: .8rem 1rem; border-radius: 10px;
   background: var(--surface); border: 1px solid var(--line); font-size: .9rem; }
+.sc-head { font-weight: 700; margin-bottom: .6rem; }
+.scorecard { list-style: none; margin: 0 0 .8rem; padding: 0; display: grid; gap: .3rem; }
+.scorecard li { display: grid; grid-template-columns: 1.4rem 8.5rem 1fr; align-items: baseline;
+  font-size: .85rem; }
+.sc-mark { font-weight: 800; }
+.sc-ok .sc-mark { color: var(--good); } .sc-no .sc-mark { color: var(--warn); }
+.sc-label { color: var(--text); font-weight: 600; }
+.sc-detail { color: var(--muted); font-variant-numeric: tabular-nums; }
+.sc-dl { display: inline-block; margin-top: .2rem; color: var(--accent2); font-weight: 600; }
+.sug-cleanup { color: var(--accent2) !important; }
 
 .ghost { background: none; border: 1px solid var(--line2); color: var(--muted); cursor: pointer;
   font: inherit; font-size: .82rem; padding: .4rem .8rem; border-radius: 8px; }

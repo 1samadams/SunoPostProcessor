@@ -26,9 +26,21 @@ specific, well-understood problems with AI-generated mixes:
    normalization, not limiting-for-loudness — the point is consistency, not
    crushing the track.
 
-Processing order matters: **de-harsh → mud cut → loudness normalize**.
-Normalizing before EQ means your gain staging is wrong by the time you EQ;
-always fix the spectral issues first, then set final level last.
+Processing order matters: **[declip] → de-harsh → mud cut → [sub HPF] →
+loudness normalize**. Normalizing before EQ means your gain staging is wrong
+by the time you EQ; always fix the spectral issues first, then set final level
+last. The bracketed cleanup stages (clip repair, subsonic high-pass) only run
+when the smart tuner detects the problem — see below.
+
+**Auto-cleanup (conditional, tuner-decided):**
+- **De-clip** (`declip`) — reconstructs short clipped/flat-topped runs by cubic
+  interpolation when the source clips (>20 samples at full scale). Runs first,
+  before anything else.
+- **Sub-bass high-pass** (`highpass`) — zero-phase HPF (default 30 Hz) removes
+  inaudible infrasonic rumble when detected; frees true-peak/limiter headroom.
+  Runs after the EQ, before loudness normalize.
+Both are track properties (server-side, not user controls), applied only when
+the analysis flags them; a clean track gets neither.
 
 ## Architecture decisions (don't relitigate these without reason)
 
@@ -144,6 +156,8 @@ off short **10 / 15 / 30 s** clips with a start-position scrubber:
   - **Input health** (`_input_health`) — separate amber warnings for source
     clipping / TP > 0, DC offset, already-brick-walled material, and a loudness
     forecast when a peaky track will land under −14.
+  - **Cleanup** — detects subsonic rumble (→ high-pass) and source clipping
+    (→ de-clip); shows the planned cleanup in the banner (`cleanup` list).
   Heuristic thresholds are transparent (measured numbers ride in the reasons)
   and default to Standard when unsure; any manual control change dismisses the
   banner. The tuner never overrides a choice you make.
@@ -171,7 +185,14 @@ off short **10 / 15 / 30 s** clips with a start-position scrubber:
 - **Graphical loudness/true-peak meter** — gauges for input → −14 LUFS and the
   processed peak vs the −1 dBTP ceiling (the before/after meter the spec asks
   for).
-- **Process full track** commit → download, using the tuned settings.
+- **Process full track** commit → download, using the tuned settings. The
+  commit shows a **before/after scorecard** (`_scorecard` / `harshness_index`):
+  green-check rows for loudness → −14, true peak ≤ −1 dBTP, harshness index
+  (2.5–8 kHz vs a 600–2000 Hz mid reference that *excludes* the mud band so the
+  mud cut can't inflate it), mono-compatibility (L/R correlation), DC offset,
+  clipping repaired, sub-rumble removed — objective verification without
+  needing a fine ear. (The harshness index is a rough gauge, not corpus-
+  calibrated; the before→after *direction* is the reliable part.)
 
 Preview correctness: the de-harsh band reference and loudness gain are measured
 once on the whole track at upload and reused for every preview segment, so a

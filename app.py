@@ -181,6 +181,30 @@ def _detect_mud(f: np.ndarray, psd: np.ndarray) -> float:
     return -round(min(3.0, max(0.5, 1.0 + max(0.0, excess) * 0.5)), 1)
 
 
+def _detect_rumble(f: np.ndarray, psd: np.ndarray, sr: int):
+    """High-pass cutoff (Hz) if there's notable infrasonic (<25 Hz) energy, else
+    None. A 30 Hz cut is safe for musical sub-bass (808s live at 30-60 Hz)."""
+    def dens(lo, hi):
+        sel = (f >= lo) & (f < hi)
+        return 10.0 * np.log10(float(psd[sel].mean()) + 1e-20) if sel.any() else -120.0
+    infra, bass = dens(8, 25), dens(30, 120)
+    return 30.0 if (infra - bass) > -20.0 else None
+
+
+def _clip_count(audio: np.ndarray, thresh: float = 0.997) -> int:
+    return int(np.sum(np.abs(audio) >= thresh))
+
+
+def _mono_correlation(audio: np.ndarray) -> float:
+    """L/R correlation: ~+1 mono-compatible, ~0 wide, <0 phase-cancels in mono."""
+    if audio.ndim == 1 or audio.shape[1] < 2:
+        return 1.0
+    L, R = audio[:, 0], audio[:, 1]
+    if np.std(L) < 1e-9 or np.std(R) < 1e-9:
+        return 1.0
+    return float(np.clip(np.corrcoef(L, R)[0, 1], -1.0, 1.0))
+
+
 def _harsh_start(env_db_ref: np.ndarray, duration: float) -> float:
     """Time (s) of the loudest sustained band energy, minus a lead-in -- where
     the preview scrubber should land so you hear the worst of it."""
@@ -255,16 +279,26 @@ def _analyze(audio: np.ndarray, sr: int, duration: float):
                      f"({res_h:.0f} dB over trend) — targeting {band[0]/1000:.1f}"
                      f"–{band[1]/1000:.1f} kHz instead of the usual 3–6 kHz.")
 
+    # cleanup decisions (applied automatically, like band/mud)
+    hpf_hz = _detect_rumble(f, psd, sr)
+    n_clip = _clip_count(audio)
+    do_declip = n_clip > 20
+    cleanup = []
+    if hpf_hz:
+        cleanup.append(f"high-passing sub-rumble below {hpf_hz:.0f} Hz (frees headroom)")
+    if do_declip:
+        cleanup.append(f"repairing {n_clip:,} clipped samples in the source")
+
     suggest = {
         "preset": preset, "intensity": 100, "custom": custom,
         "static_db": static_db, "threshold_pctl": threshold_pctl, "ratio": ratio,
         "reasons": reasons, "band_note": band_note, "confidence": confidence,
         "band": [round(band[0], 1), round(band[1], 1)],
         "band_display": f"{band[0]/1000:.1f}–{band[1]/1000:.1f} kHz",
-        "mud_db": mud_gain, "harsh_start": harsh_start,
+        "mud_db": mud_gain, "harsh_start": harsh_start, "cleanup": cleanup,
         "measured": {"brightness": round(brightness, 1), "crest": round(crest, 1)},
     }
-    return band, mud_gain, env_db_ref, suggest
+    return band, mud_gain, env_db_ref, hpf_hz, do_declip, suggest
 
 
 def _input_health(audio: np.ndarray, sr: int, input_lufs, input_tp: float) -> list:
@@ -361,10 +395,10 @@ def upload():
     # every preview so a clip matches the full render). Band + mud_gain are
     # track properties kept server-side, not user controls.
     try:
-        band, mud_gain, env_db_ref, suggest = _analyze(audio, sr, duration)
+        band, mud_gain, env_db_ref, hpf_hz, do_declip, suggest = _analyze(audio, sr, duration)
     except Exception:  # noqa: BLE001 -- fall back to the default band on failure
         app.logger.exception("analyze failed")
-        band, mud_gain, suggest = None, None, None
+        band, mud_gain, hpf_hz, do_declip, suggest = None, None, None, False, None
         env_db_ref = dsp.band_envelope_db(audio, sr)
 
     # Loudness AFTER the mud cut (chosen depth) -> previews gain off this so the
@@ -384,6 +418,7 @@ def upload():
     _remember(_UPLOADS, uid, {
         "path": path, "meta": meta, "env_db_ref": env_db_ref,
         "band": list(band) if band is not None else None, "mud_gain": mud_gain,
+        "hpf_hz": hpf_hz, "declip": bool(do_declip),
         "gain_lufs": None if not np.isfinite(gain_lufs) else float(gain_lufs),
     })
 
@@ -441,6 +476,7 @@ def preview():
         seg, sr, preset=preset, intensity=intensity,
         threshold_pctl=threshold_pctl, ratio=ratio, static_db=static_db,
         env_db_ref=env_ref, measured_lufs=gain_lufs, band=band, mud_gain=mud_gain,
+        hpf_hz=rec.get("hpf_hz"), do_declip=rec.get("declip", False),
     )
     # level-matched original (same loudness gain + ceiling, no EQ) for a fair A/B
     original = dsp.normalize_loudness(seg, sr, measured_lufs=gain_lufs)
@@ -493,9 +529,12 @@ def process_full():
 
     audio, sr = sf.read(rec["path"], always_2d=False)
     band = tuple(rec["band"]) if rec.get("band") else None
+    hpf_hz, do_declip = rec.get("hpf_hz"), rec.get("declip", False)
+    n_clip = _clip_count(audio) if do_declip else 0
     processed = dsp.process(audio, sr, preset=preset, intensity=intensity,
                             threshold_pctl=threshold_pctl, ratio=ratio,
-                            static_db=static_db, band=band, mud_gain=rec.get("mud_gain"))
+                            static_db=static_db, band=band, mud_gain=rec.get("mud_gain"),
+                            hpf_hz=hpf_hz, do_declip=do_declip)
 
     out_lufs = dsp.integrated_lufs(processed, sr)
     out_tp = dsp.true_peak_db(processed, sr)
@@ -506,6 +545,7 @@ def process_full():
     base = os.path.splitext(os.path.basename(data.get("filename", "track")))[0] or "track"
     _remember(_DOWNLOADS, did, {"path": out_path, "name": f"{base}_processed.wav"})
 
+    scorecard = _scorecard(audio, processed, sr, rec, out_lufs, out_tp, n_clip)
     return jsonify({
         "download_id": did,
         "metrics": {
@@ -514,7 +554,38 @@ def process_full():
             "input_lufs": rec["meta"]["input_lufs"],
             "input_tp": rec["meta"]["input_tp"],
         },
+        "scorecard": scorecard,
     })
+
+
+def _scorecard(audio, processed, sr, rec, out_lufs, out_tp, n_clip_repaired):
+    """Objective before/after report so results are verifiable without ears."""
+    def item(label, ok, detail):
+        return {"label": label, "ok": bool(ok), "detail": detail}
+
+    in_lufs = rec["meta"]["input_lufs"]
+    in_tp = rec["meta"]["input_tp"]
+    h_in = dsp.harshness_index(np.asarray(audio, dtype=np.float64), sr)
+    h_out = dsp.harshness_index(np.asarray(processed, dtype=np.float64), sr)
+    corr = _mono_correlation(np.asarray(audio, dtype=np.float64))
+    dc = float(np.mean(audio))
+    h_dir = "↓ reduced" if h_out < h_in - 1 else ("↑ raised" if h_out > h_in + 1
+            else ("unchanged — already tame" if h_in < 35 else "unchanged"))
+    rows = [
+        item("Loudness", np.isfinite(out_lufs) and abs(out_lufs + 14.0) <= 0.75,
+             f"{in_lufs} → {round(float(out_lufs), 1) if np.isfinite(out_lufs) else '–'} LUFS (target −14)"),
+        item("True peak", out_tp <= -1.0 + 0.05,
+             f"{in_tp} → {round(float(out_tp), 1)} dBTP (ceiling −1)"),
+        item("Harshness", h_out <= max(h_in + 3, 45), f"index {h_in} → {h_out}  ({h_dir})"),
+        item("Mono-compatible", corr >= 0.2,
+             f"L/R correlation {corr:+.2f}" + ("" if corr >= 0.2 else " — thin/phasey on mono")),
+        item("No DC offset", abs(dc) <= 0.003, f"{dc:+.4f}"),
+        item("Clipping", True,
+             "none in source" if n_clip_repaired == 0 else f"repaired {n_clip_repaired:,} samples"),
+    ]
+    if rec.get("hpf_hz"):
+        rows.append(item("Sub-rumble", True, f"high-passed below {rec['hpf_hz']:.0f} Hz"))
+    return rows
 
 
 @app.get("/download/<did>")
