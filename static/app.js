@@ -28,10 +28,12 @@ const toast = (msg) => {
 };
 
 // ---------------------------------------------------------------------------
-// audio A/B: two elements play in sync, volume gates which one you hear
+// audio A/B: three elements play in sync (aProc is the master clock), volume
+// gates which one you hear — Original, Processed, or Removed (what's cut).
 // ---------------------------------------------------------------------------
-const aOrig = new Audio(), aProc = new Audio();
-[aOrig, aProc].forEach((a) => { a.preload = "auto"; });
+const aOrig = new Audio(), aProc = new Audio(), aDiff = new Audio();
+const A_ALL = [aOrig, aProc, aDiff];
+A_ALL.forEach((a) => { a.preload = "auto"; });
 let active = "orig", playing = false;
 
 function loadAudio(el, src) {
@@ -45,36 +47,40 @@ function loadAudio(el, src) {
 function applyGains() {
   aOrig.volume = active === "orig" ? 1 : 0;
   aProc.volume = active === "proc" ? 1 : 0;
+  aDiff.volume = active === "diff" ? 1 : 0;
 }
 function setActive(which) {
+  if (which === "diff" && !aDiff.src) return;
   active = which;
   $("ab-orig").dataset.active = which === "orig" ? "1" : "0";
   $("ab-proc").dataset.active = which === "proc" ? "1" : "0";
+  $("ab-diff").dataset.active = which === "diff" ? "1" : "0";
+  $("ab-hint").classList.toggle("hidden", which !== "diff");
   applyGains();
 }
 async function togglePlay() {
   if (!aProc.src) return;
   if (playing) {
-    aOrig.pause(); aProc.pause(); playing = false; $("play").innerHTML = "&#9658;";
+    A_ALL.forEach((a) => a.pause()); playing = false; $("play").innerHTML = "&#9658;";
   } else {
-    const t = (active === "orig" ? aOrig : aProc).currentTime || 0;
-    try { aOrig.currentTime = t; aProc.currentTime = t; } catch (e) {}
+    const t = aProc.currentTime || 0;
+    A_ALL.forEach((a) => { if (a.src) { try { a.currentTime = t; } catch (e) {} } });
     applyGains();
-    await Promise.allSettled([aOrig.play(), aProc.play()]);
+    await Promise.allSettled(A_ALL.filter((a) => a.src).map((a) => a.play()));
     playing = true; $("play").innerHTML = "&#10073;&#10073;";
   }
 }
-// keep the muted element locked to the audible one; drive scrubber
+// aProc is the master clock; keep the others locked to it and drive the scrubber
 aProc.addEventListener("timeupdate", () => {
-  const lead = active === "orig" ? aOrig : aProc;
-  const follow = active === "orig" ? aProc : aOrig;
-  if (Math.abs(follow.currentTime - lead.currentTime) > 0.08) {
-    try { follow.currentTime = lead.currentTime; } catch (e) {}
-  }
-  const d = lead.duration || state.dur || 1;
-  const frac = Math.min(1, lead.currentTime / d);
+  [aOrig, aDiff].forEach((a) => {
+    if (a.src && Math.abs(a.currentTime - aProc.currentTime) > 0.08) {
+      try { a.currentTime = aProc.currentTime; } catch (e) {}
+    }
+  });
+  const d = aProc.duration || state.dur || 1;
+  const frac = Math.min(1, aProc.currentTime / d);
   $("scrub-fill").style.width = `${frac * 100}%`;
-  $("time").textContent = fmtTime(lead.currentTime);
+  $("time").textContent = fmtTime(aProc.currentTime);
   const ph = $("gr-playhead");
   ph.style.left = `${frac * 100}%`; ph.classList.add("on");
 });
@@ -82,9 +88,8 @@ function onEnded() {
   playing = false; $("play").innerHTML = "&#9658;";
   $("scrub-fill").style.width = "0%";
   $("gr-playhead").classList.remove("on");
-  try { aOrig.currentTime = 0; aProc.currentTime = 0; } catch (e) {}
+  A_ALL.forEach((a) => { try { a.currentTime = 0; } catch (e) {} });
 }
-aOrig.addEventListener("ended", onEnded);
 aProc.addEventListener("ended", onEnded);
 
 // ---------------------------------------------------------------------------
@@ -201,6 +206,7 @@ $("ratio").addEventListener("input", (e) => {
 });
 $("ab-orig").addEventListener("click", () => setActive("orig"));
 $("ab-proc").addEventListener("click", () => setActive("proc"));
+$("ab-diff").addEventListener("click", () => setActive("diff"));
 $("play").addEventListener("click", togglePlay);
 
 function syncAdvancedDisabled() {
@@ -328,16 +334,16 @@ async function runPreview(segmentChanged) {
 
 async function applyPreview(data, reloadOriginal) {
   const wasPlaying = playing;
-  const lead = active === "orig" ? aOrig : aProc;
-  const keepT = reloadOriginal ? 0 : (lead.currentTime || 0);
+  const keepT = reloadOriginal ? 0 : (aProc.currentTime || 0);
 
   const loads = [loadAudio(aProc, data.processed_wav)];
+  if (data.diff_wav) loads.push(loadAudio(aDiff, data.diff_wav));  // Removed monitor
   if (reloadOriginal && data.original_wav) loads.push(loadAudio(aOrig, data.original_wav));
   await Promise.all(loads);
 
-  try { aProc.currentTime = keepT; aOrig.currentTime = keepT; } catch (e) {}
+  A_ALL.forEach((a) => { if (a.src) { try { a.currentTime = keepT; } catch (e) {} } });
   applyGains();
-  if (wasPlaying) { await Promise.allSettled([aOrig.play(), aProc.play()]); }
+  if (wasPlaying) { await Promise.allSettled(A_ALL.filter((a) => a.src).map((a) => a.play())); }
 }
 
 function cls(el, ok, warn) {

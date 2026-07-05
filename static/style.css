@@ -120,6 +120,9 @@ input[type=range]:disabled { opacity: .45; }
 .ab[data-active="1"]#ab-orig { background: rgba(139,147,163,.16); color: var(--text); }
 .ab[data-active="1"]#ab-proc { background: linear-gradient(135deg, rgba(124,92,255,.35), rgba(34,211,238,.28));
   color: #fff; box-shadow: inset 0 0 0 1px rgba(124,92,255,.5); }
+.ab[data-active="1"]#ab-diff { background: linear-gradient(135deg, rgba(251,191,36,.32), rgba(251,146,60,.28));
+  color: #fff; box-shadow: inset 0 0 0 1px rgba(251,191,36,.5); }
+.ab-hint { font-size: .74rem; color: var(--muted); margin: -.5rem 0 1rem; }
 
 /* transport */
 .transport { display: flex; align-items: center; gap: .8rem; margin-bottom: 1.2rem; }
