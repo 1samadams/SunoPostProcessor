@@ -26,6 +26,7 @@ const state = {
   preset: "Standard", intensity: 100,
   custom: false, threshold: 91, ratio: 3, static: -1.5,
   band: [3000, 6000],   // adaptive de-harsh band (smart tuner picks it)
+  mudDb: null, cleanup: [],   // for the live "will apply" commit plan
   dur: 10, start: 0,
   lastSegKey: null, seq: 0,
 };
@@ -257,6 +258,7 @@ function applySuggestion(sug) {
   if (!sug) { banner.classList.add("hidden"); return; }
 
   if (sug.band) state.band = sug.band;            // adaptive de-harsh band
+  state.mudDb = sug.mud_db; state.cleanup = sug.cleanup || [];
   state.preset = sug.preset;
   [...$("presets").children].forEach((s) => s.dataset.active = s.dataset.preset === sug.preset ? "1" : "0");
   state.intensity = sug.intensity;
@@ -324,10 +326,30 @@ function renderAssessment(a) {
 }
 
 // ---------------------------------------------------------------------------
+// live "will apply" plan under the PROCESS button — exactly what commit renders
+// ---------------------------------------------------------------------------
+function updateCommitPlan() {
+  const el = $("commit-note");
+  if (!el) return;
+  const parts = [];
+  parts.push(state.preset === "Off" ? "de-harsh off"
+    : `de-harsh ${state.preset.toLowerCase()}${state.custom ? " (custom)" : ""}`
+      + (state.intensity !== 100 ? ` @ ${state.intensity}%` : ""));
+  if (state.mudDb != null) parts.push(`mud ${state.mudDb} dB`);
+  (state.cleanup || []).forEach((c) => {
+    if (/rumble/.test(c)) parts.push("sub-HPF 30 Hz");
+    else if (/clip/.test(c)) parts.push("de-clip");
+  });
+  parts.push("normalize −14 LUFS / −1 dBTP");
+  el.textContent = parts.join(" · ");
+}
+
+// ---------------------------------------------------------------------------
 // preview (debounced)
 // ---------------------------------------------------------------------------
 let debounceTimer = null;
 function refreshPreview(segmentChanged) {
+  updateCommitPlan();
   clearTimeout(debounceTimer);
   debounceTimer = setTimeout(() => runPreview(segmentChanged), 320);
 }

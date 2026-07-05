@@ -271,7 +271,7 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 
   transition: filter .12s; }
 .commit:hover { filter: brightness(1.05); }
 .commit:disabled { filter: brightness(.85); cursor: default; }
-.commit-note { font: 9px 'Space Mono', monospace; color: var(--muted); text-align: center;
+.commit-note { font: 9px/1.5 'Space Mono', monospace; color: var(--muted); text-align: center;
   margin-top: 8px; letter-spacing: .05em; }
 
 /* scorecard (process result) */
