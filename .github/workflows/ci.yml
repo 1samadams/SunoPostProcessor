@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  dsp-selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # soundfile wheels bundle libsndfile, but install the system lib too so a
+      # minimal runner can't hit a load-time error (mirrors nixpacks.toml).
+      - name: Install libsndfile
+        run: sudo apt-get update && sudo apt-get install -y libsndfile1
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Sanity-check the DSP core end to end: process a known WAV and assert the
+      # before/after LUFS + true-peak land on target. Guards against silent
+      # regressions in de-harsh / mud / loudness without opening the web app.
+      - name: DSP selftest
+        run: python test_dsp.py --selftest

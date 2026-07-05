@@ -145,8 +145,11 @@ function showDrop(on) {
   if (on) { drawDropLine(); $("topfile-text").textContent = "no signal"; }
 }
 
+const ALLOWED_EXT = [".wav", ".flac", ".aif", ".aiff", ".ogg", ".mp3"];
 async function doUpload(file) {
-  if (!file.name.toLowerCase().endsWith(".wav")) { toast("Please choose a .wav file"); return; }
+  if (!ALLOWED_EXT.some((e) => file.name.toLowerCase().endsWith(e))) {
+    toast("Please choose a WAV, FLAC, AIFF, OGG or MP3 file"); return;
+  }
   $("uploading").classList.remove("hidden");
   $("load").classList.add("hidden");
   const fd = new FormData(); fd.append("file", file);
