@@ -44,6 +44,10 @@ _UPLOADS: "OrderedDict[str, dict]" = OrderedDict()   # id -> {path, meta}
 _DOWNLOADS: "OrderedDict[str, dict]" = OrderedDict()  # id -> {path, name}
 _MAX_KEEP = 12  # cap stored files; evict oldest
 
+# input formats libsndfile reads natively (Suno exports WAV/MP3; FLAC is
+# common too). Decoding is uniform once soundfile hands back float samples.
+_ALLOWED_EXT = {".wav", ".flac", ".aif", ".aiff", ".ogg", ".mp3"}
+
 
 def _remember(store: "OrderedDict[str, dict]", key: str, value: dict) -> None:
     with _LOCK:
@@ -497,11 +501,12 @@ def upload():
     upload = request.files.get("file")
     if upload is None or upload.filename == "":
         abort(400, "no file uploaded")
-    if not upload.filename.lower().endswith(".wav"):
-        abort(400, "please upload a .wav file")
+    ext = os.path.splitext(upload.filename)[1].lower()
+    if ext not in _ALLOWED_EXT:
+        abort(400, "unsupported format — upload WAV, FLAC, AIFF, OGG or MP3")
 
     uid = uuid.uuid4().hex
-    path = os.path.join(_TMP, f"{uid}.wav")
+    path = os.path.join(_TMP, f"{uid}{ext}")
     upload.save(path)
 
     try:
