@@ -259,6 +259,12 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 
 .advanced[open] .adv-sum::before { content: "\25BE "; }
 .adv-body { padding-bottom: 11px; display: flex; flex-direction: column; gap: 10px; }
 .adv-hint { font: 9px/1.5 'Space Mono', monospace; color: var(--muted); margin: 2px 0 0; }
+.adv-sum .opt { color: var(--accent); opacity: .8; }
+/* output-format selectors (Finalize) */
+.out-grid { display: grid; grid-template-columns: auto auto 1fr; gap: 10px; margin-top: 2px; }
+.out-col { display: flex; flex-direction: column; gap: 5px; }
+.segmented.sm { padding: 3px; }
+.segmented.sm .seg { padding: 7px 8px; font-size: 10px; }
 
 /* GR ladder + export */
 .export { padding: 12px 14px; border-color: var(--inset-bd2); }

@@ -168,13 +168,15 @@ def _deharsh_band_edges(sr: int, band: tuple | None = None):
     return float(lo), float(hi)
 
 
-def _deharsh_bands(audio2d: np.ndarray, sr: int, band: tuple | None = None):
-    """Split the signal for de-harshing.
+def _deharsh_bands(audio2d: np.ndarray, sr: int, band: tuple | None = None,
+                   attack_s: float = _ATTACK_S, release_s: float = _RELEASE_S):
+    """Split the signal for a single-band dynamic cut.
 
     Returns (band, rest, env) where `band` is the zero-phase bandpass,
     `rest` = audio - band (so band + rest reconstructs the input exactly), and
     `env` is the stereo-linked fast-attack/slow-release envelope of the band
-    that drives the compressor sidechain.
+    that drives the compressor sidechain. `attack_s`/`release_s` default to the
+    de-harsh follower; the de-esser passes faster ones for transient sibilance.
     """
     lo, hi = _deharsh_band_edges(sr, band)  # caller guards the None case
     sos = signal.butter(4, [lo, hi], btype="bandpass",
@@ -182,24 +184,27 @@ def _deharsh_bands(audio2d: np.ndarray, sr: int, band: tuple | None = None):
     band_sig = signal.sosfiltfilt(sos, audio2d, axis=0)
     rest = audio2d - band_sig
     sidechain = np.mean(np.abs(band_sig), axis=1)  # one envelope for both channels
-    env = _asym_envelope(sidechain, sr, _ATTACK_S, _RELEASE_S)
+    env = _asym_envelope(sidechain, sr, attack_s, release_s)
     return band_sig, rest, env
 
 
 def band_envelope_db(audio: np.ndarray, sr: int, band: tuple | None = None,
-                     subsample_hz: float = 500.0) -> np.ndarray:
-    """Subsampled dB envelope of the de-harsh band over a whole track.
+                     subsample_hz: float = 500.0,
+                     attack_s: float = _ATTACK_S, release_s: float = _RELEASE_S) -> np.ndarray:
+    """Subsampled dB envelope of a de-harsh/de-ess band over a whole track.
 
-    The de-harsh threshold is a percentile of this distribution. Compute it
-    once on the WHOLE track at upload (for the tuner's chosen `band`) and pass
-    it back into deharsh()/process() as `env_db_ref` so a short preview segment
-    picks the same threshold the full track will. Subsampled because the
-    envelope is smooth (~120 ms release) so the distribution survives.
+    The dynamic threshold is a percentile of this distribution. Compute it
+    once on the WHOLE track at upload (for the chosen `band`) and pass it back
+    into deharsh()/deess()/process() as the matching `env_db_ref` so a short
+    preview segment picks the same threshold the full track will. Subsampled
+    because the envelope is smooth so the distribution survives. Pass the same
+    `attack_s`/`release_s` the consuming stage applies (de-ess uses faster
+    constants) so the reference distribution matches.
     """
     if _deharsh_band_edges(sr, band) is None:
-        return np.zeros(1)  # no de-harsh possible at this sr; ref goes unused
+        return np.zeros(1)  # no cut possible at this sr; ref goes unused
     audio2d, _ = _as_2d(audio)
-    _, _, env = _deharsh_bands(audio2d, sr, band)
+    _, _, env = _deharsh_bands(audio2d, sr, band, attack_s, release_s)
     env_db = 20.0 * np.log10(env + _EPS)
     step = max(1, int(sr / subsample_hz))
     return env_db[::step].astype(np.float64)
@@ -338,6 +343,56 @@ def deharsh_gr_series(audio: np.ndarray, sr: int, preset: str = "Standard",
         a, b = edges[i], edges[i + 1]
         out.append(round(float(total[a:b].min()), 2) if b > a else 0.0)
     return out
+
+
+# ---------------------------------------------------------------------------
+# optional: de-esser (vocal sibilance, ~5-9 kHz)
+#
+# The same single-band dynamic mechanism as de-harsh, but aimed at vocal
+# sibilance ("ess"/"tss" transients) and PURELY dynamic -- no static cut. A
+# static HF cut here would dull every 's'/'t' and cymbal; de-essing must only
+# duck the sibilant *peaks*, so the percentile threshold does all the work and
+# steady HF is left untouched. Faster follower than de-harsh (sibilance is
+# short). Off by default (amount 0); opt-in from the Finalize panel.
+# ---------------------------------------------------------------------------
+_DEESS_LOW, _DEESS_HIGH = 5000.0, 9000.0
+DEESS_BAND = (_DEESS_LOW, _DEESS_HIGH)
+_DEESS_ATTACK_S = 0.003
+_DEESS_RELEASE_S = 0.060
+
+
+def deess(audio: np.ndarray, sr: int, amount: float = 0.0,
+          band: tuple | None = None, env_db_ref: np.ndarray | None = None) -> np.ndarray:
+    """Dynamic sibilance reducer on ~5-9 kHz. Does not mutate `audio`.
+
+    amount : 0-100. 0 = bypass. Scales how much sibilance is grabbed (lower
+             percentile) and the ratio. Purely dynamic -- no static component.
+    env_db_ref : whole-track de-ess band envelope (from band_envelope_db with
+             the de-ess follower, or deess_envelope_db) so a preview segment
+             picks the same threshold as the full render.
+    """
+    k = float(amount) / 100.0
+    b = band if band is not None else DEESS_BAND
+    if k <= 0.0 or _deharsh_band_edges(sr, b) is None:
+        return np.array(audio, dtype=np.float64, copy=True)
+    k = min(k, 1.0)
+    pctl_eff = float(np.clip(97.0 - 12.0 * k, 50.0, 100.0))  # 50%->91st, 100%->85th
+    ratio_eff = 1.0 + 6.0 * k                                # up to 7:1
+
+    audio2d, was_mono = _as_2d(audio)
+    band_sig, rest, env = _deharsh_bands(audio2d, sr, b, _DEESS_ATTACK_S, _DEESS_RELEASE_S)
+    env_db = 20.0 * np.log10(env + _EPS)
+    gr_db = _deharsh_gr_db(env_db, env_db_ref, pctl_eff, ratio_eff)  # <= 0, dynamic only
+    out = rest + band_sig * (10.0 ** (gr_db / 20.0))[:, None]
+    return _restore_shape(out, was_mono)
+
+
+def deess_envelope_db(audio: np.ndarray, sr: int, band: tuple | None = None) -> np.ndarray:
+    """Whole-track de-ess band envelope reference (band_envelope_db with the
+    de-ess follower). Compute once at upload; pass to deess()/process()."""
+    b = band if band is not None else DEESS_BAND
+    return band_envelope_db(audio, sr, band=b,
+                            attack_s=_DEESS_ATTACK_S, release_s=_DEESS_RELEASE_S)
 
 
 # ---------------------------------------------------------------------------
@@ -500,6 +555,102 @@ def normalize_loudness(audio: np.ndarray, sr: int, target_lufs: float = -14.0,
     return _restore_shape(out, was_mono)
 
 
+def limit_true_peak(audio: np.ndarray, sr: int, ceiling_dbtp: float = -1.0) -> np.ndarray:
+    """Public true-peak limiter: guarantee |true peak| <= ceiling_dbtp.
+
+    Used after a sample-rate conversion, which can introduce new inter-sample
+    peaks the pre-resample limiter never saw. Loudness is essentially unchanged
+    by resampling, so this re-guarantees the ceiling without re-normalizing.
+    """
+    audio2d, was_mono = _as_2d(audio)
+    ceiling_lin = 10.0 ** (ceiling_dbtp / 20.0)
+    out = _true_peak_limit(audio2d, sr, ceiling_lin)
+    return _restore_shape(out, was_mono)
+
+
+# ---------------------------------------------------------------------------
+# finalize: optional "glue" bus compression + harmonic saturation
+#
+# A mastering-style finish, OFF by default and separate from loudness
+# normalization: a gentle, slow, stereo-linked compressor (rides the top of the
+# dynamics at a low ratio -- the "glue") followed by soft saturation (odd
+# harmonics from a tanh curve plus a touch of even from a small asymmetry -- the
+# "valve/transformer" warmth). It runs right before normalize, so the final
+# LUFS / true-peak are still guaranteed by normalize_loudness; this stage adds
+# density and tone, it is NOT a loudness maximizer (CLAUDE.md "normalize, don't
+# limit-for-loudness" still governs the level stage). `amount` 0-100 scales both
+# parts; 0 = bypass.
+# ---------------------------------------------------------------------------
+_GLUE_ATTACK_S = 0.030
+_GLUE_RELEASE_S = 0.250
+
+
+def glue(audio: np.ndarray, sr: int, amount: float = 0.0) -> np.ndarray:
+    """Optional glue bus compression + soft harmonic saturation. Does not
+    mutate `audio`. `amount` 0-100; 0 = bypass. Kept deliberately subtle."""
+    k = float(amount) / 100.0
+    if k <= 0.0:
+        return np.array(audio, dtype=np.float64, copy=True)
+    k = min(k, 1.0)
+    audio2d, was_mono = _as_2d(audio)
+
+    # 1) gentle stereo-linked bus compression. Threshold is a percentile of the
+    #    slow envelope (self-calibrating, level-independent like the rest of the
+    #    chain); low ratio rides the loud body without pumping.
+    sc = np.mean(np.abs(audio2d), axis=1)
+    env = _asym_envelope(sc, sr, _GLUE_ATTACK_S, _GLUE_RELEASE_S)
+    env_db = 20.0 * np.log10(env + _EPS)
+    thresh_db = float(np.percentile(env_db, 70.0))
+    ratio = 1.0 + 1.5 * k                                # up to 2.5:1
+    over = env_db - thresh_db
+    gr_db = np.where(over > 0.0, over * (1.0 / ratio - 1.0), 0.0)
+    x = audio2d * (10.0 ** (gr_db / 20.0))[:, None]
+    makeup_db = -0.5 * float(gr_db.min())                # restore ~half the peak reduction
+    x = x * (10.0 ** (makeup_db / 20.0))
+
+    # 2) soft saturation. tanh(drive*x)/drive is ~unity at small signal (slope
+    #    sech^2(0)=1) and rounds peaks, adding odd harmonics; the small bias adds
+    #    even harmonics (tube-ish) and the -tanh(bias) term cancels the DC it
+    #    would introduce. Blended dry/wet so it stays gentle.
+    drive = 1.0 + 2.5 * k
+    bias = 0.12 * k
+    wet = (np.tanh(drive * (x + bias)) - np.tanh(drive * bias)) / drive
+    mix = min(0.6, 0.6 * k)
+    out = (1.0 - mix) * x + mix * wet
+    return _restore_shape(out, was_mono)
+
+
+# ---------------------------------------------------------------------------
+# output: sample-rate conversion + dither (for the download format options)
+# ---------------------------------------------------------------------------
+def resample_to(audio: np.ndarray, sr: int, target_sr: int):
+    """Polyphase resample to `target_sr`. Returns (audio, target_sr). No-op (a
+    copy) when the rate already matches. Callers re-run limit_true_peak()
+    afterwards because resampling can create new inter-sample peaks."""
+    if int(target_sr) == int(sr):
+        return np.array(audio, dtype=np.float64, copy=True), int(sr)
+    from math import gcd
+    g = gcd(int(sr), int(target_sr))
+    up, down = int(target_sr) // g, int(sr) // g
+    audio2d, was_mono = _as_2d(audio)
+    out = signal.resample_poly(audio2d, up, down, axis=0)
+    return _restore_shape(out, was_mono), int(target_sr)
+
+
+def dither_tpdf(audio: np.ndarray, bits: int) -> np.ndarray:
+    """Add TPDF (triangular) dither at +-1 LSB for a `bits`-bit PCM target.
+
+    Needed when truncating float to 16-bit so quantization error is decorrelated
+    from the signal (no gritty low-level distortion on fades/reverb tails). At
+    24-bit the quantization floor is already far below audibility, so callers
+    skip it there. Apply as the very last step before writing."""
+    audio2d, was_mono = _as_2d(audio)
+    lsb = 2.0 ** -(bits - 1)
+    rng = np.random.default_rng()
+    tri = (rng.random(audio2d.shape) - rng.random(audio2d.shape)) * lsb  # TPDF, +-1 LSB
+    return _restore_shape(audio2d + tri, was_mono)
+
+
 # ---------------------------------------------------------------------------
 # full chain convenience wrapper (used by the CLI test script and web app)
 # ---------------------------------------------------------------------------
@@ -509,21 +660,28 @@ def process(audio: np.ndarray, sr: int, preset: str = "Standard",
             ratio: float | None = None, env_db_ref: np.ndarray | None = None,
             measured_lufs: float | None = None, static_db: float | None = None,
             band: tuple | None = None, mud_gain: float | None = None,
-            hpf_hz: float | None = None, do_declip: bool = False) -> np.ndarray:
-    """Run the full chain: [declip] -> de-harsh -> mud cut -> [sub HPF] ->
-    loudness normalize.
+            hpf_hz: float | None = None, do_declip: bool = False,
+            deess_amount: float = 0.0, deess_band: tuple | None = None,
+            deess_env_db_ref: np.ndarray | None = None,
+            glue_amount: float = 0.0) -> np.ndarray:
+    """Run the full chain: [declip] -> de-harsh -> [de-ess] -> mud cut ->
+    [sub HPF] -> [glue] -> loudness normalize.
 
     `threshold_pctl`/`ratio`/`env_db_ref`/`static_db`/`band` pass through to
     deharsh(), `mud_gain` to cut_mud(), `measured_lufs` to normalize_loudness().
     `do_declip` repairs source clipping first; `hpf_hz` removes subsonic rumble
-    before normalization -- the smart tuner enables both only when detected.
+    -- the smart tuner enables both only when detected. `deess_amount` (with
+    `deess_band`/`deess_env_db_ref`) and `glue_amount` are optional, off at 0;
+    glue runs last before normalize so the final LUFS/true-peak still hold.
     """
     x = np.asarray(audio, dtype=np.float64)
     if do_declip:
         x, _ = declip(x, sr)
     x = deharsh(x, sr, preset, intensity, threshold_pctl, ratio, env_db_ref, static_db, band)
+    x = deess(x, sr, deess_amount, deess_band, deess_env_db_ref)
     x = cut_mud(x, sr, gain_db=_MUD_GAIN_DB if mud_gain is None else mud_gain)
     if hpf_hz:
         x = highpass(x, sr, hpf_hz)
+    x = glue(x, sr, glue_amount)
     x = normalize_loudness(x, sr, target_lufs, ceiling_dbtp, measured_lufs)
     return x

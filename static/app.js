@@ -27,6 +27,8 @@ const state = {
   custom: false, threshold: 91, ratio: 3, static: -1.5,
   band: [3000, 6000],   // adaptive de-harsh band (smart tuner picks it)
   mudDb: null, cleanup: [],   // for the live "will apply" commit plan
+  deess: 0, glue: 0,          // optional Finalize stages (0 = off)
+  outFmt: "wav", outBits: 24, outSr: "source",   // download format
   dur: 10, start: 0,
   lastSegKey: null, seq: 0,
 };
@@ -238,6 +240,26 @@ $("threshold").addEventListener("input", (e) => {
 $("ratio").addEventListener("input", (e) => {
   state.ratio = +e.target.value; updateAdvancedLabels(); enterCustom(); refreshPreview(false);
 });
+
+// Finalize: de-ess / glue (affect the sound -> re-preview), output format (download only)
+$("deess").addEventListener("input", (e) => {
+  state.deess = +e.target.value; updateFinalizeLabels(); refreshPreview(false);
+});
+$("glue").addEventListener("input", (e) => {
+  state.glue = +e.target.value; updateFinalizeLabels(); refreshPreview(false);
+});
+function pickSeg(groupId, dataKey, stateKey, cast) {
+  $(groupId).addEventListener("click", (e) => {
+    const b = e.target.closest(".seg"); if (!b) return;
+    state[stateKey] = cast ? cast(b.dataset[dataKey]) : b.dataset[dataKey];
+    [...$(groupId).children].forEach((s) => s.dataset.active = s === b ? "1" : "0");
+    updateCommitPlan();   // output format changes the plan, not the preview
+  });
+}
+pickSeg("out-format", "fmt", "outFmt");
+pickSeg("out-bits", "bits", "outBits", (v) => +v);
+pickSeg("out-sr", "sr", "outSr");
+
 $("ab-orig").addEventListener("click", () => setActive("orig"));
 $("ab-proc").addEventListener("click", () => setActive("proc"));
 $("ab-diff").addEventListener("click", () => setActive("diff"));
@@ -248,6 +270,10 @@ function updateAdvancedLabels() {
   $("static-val").textContent = `${s < 0 ? "−" : ""}${Math.abs(s).toFixed(1)} dB`;
   $("threshold-val").textContent = `top ${Math.round(100 - state.threshold)}%`;
   $("ratio-val").textContent = `${(+state.ratio).toFixed(1)}:1`;
+}
+function updateFinalizeLabels() {
+  $("deess-val").textContent = state.deess > 0 ? `${state.deess}%` : "off";
+  $("glue-val").textContent = state.glue > 0 ? `${state.glue}%` : "off";
 }
 function markPresetModified(on) {
   [...$("presets").children].forEach((s) => s.classList.toggle("mod", on && s.dataset.active === "1"));
@@ -338,12 +364,16 @@ function updateCommitPlan() {
   parts.push(state.preset === "Off" ? "de-harsh off"
     : `de-harsh ${state.preset.toLowerCase()}${state.custom ? " (custom)" : ""}`
       + (state.intensity !== 100 ? ` @ ${state.intensity}%` : ""));
+  if (state.deess > 0) parts.push(`de-ess ${state.deess}%`);
   if (state.mudDb != null) parts.push(`mud ${state.mudDb} dB`);
   (state.cleanup || []).forEach((c) => {
     if (/rumble/.test(c)) parts.push("sub-HPF 30 Hz");
     else if (/clip/.test(c)) parts.push("de-clip");
   });
+  if (state.glue > 0) parts.push(`glue ${state.glue}%`);
   parts.push("normalize −14 LUFS / −1 dBTP");
+  const rate = state.outSr === "source" ? "src" : (state.outSr === "44100" ? "44.1k" : "48k");
+  parts.push(`→ ${state.outFmt.toUpperCase()} ${state.outBits}-bit ${rate}`);
   el.textContent = parts.join(" · ");
 }
 
@@ -368,6 +398,7 @@ async function runPreview(segmentChanged) {
     id: state.id, preset: state.preset, intensity: state.intensity,
     custom: state.custom, threshold_pctl: state.threshold, ratio: state.ratio,
     static_db: state.static,
+    deess_amount: state.deess, glue_amount: state.glue,
     duration: state.dur, start: state.start, need_original: needOriginal,
   };
   try {
@@ -655,6 +686,8 @@ $("commit").addEventListener("click", async () => {
         id: state.id, filename: state.filename, preset: state.preset,
         intensity: state.intensity, custom: state.custom,
         threshold_pctl: state.threshold, ratio: state.ratio, static_db: state.static,
+        deess_amount: state.deess, glue_amount: state.glue,
+        out_format: state.outFmt, out_bits: state.outBits, out_sr: state.outSr,
       }),
     });
     const data = await r.json();
@@ -665,7 +698,7 @@ $("commit").addEventListener("click", async () => {
       + `<span class="sc-text"><b>${esc(row.label)}</b> — <span class="sc-detail">${esc(row.detail)}</span></span></li>`).join("");
     st.innerHTML = `<div class="sc-head">✓ DONE — REPORT CARD</div>`
       + `<ul class="scorecard">${rows}</ul>`
-      + `<a class="sc-dl" href="/download/${data.download_id}">▼ DOWNLOAD .WAV</a>`;
+      + `<a class="sc-dl" href="/download/${data.download_id}">▼ DOWNLOAD .${(data.format && data.format.container || "wav").toUpperCase()}</a>`;
     st.classList.remove("hidden");
     btn.innerHTML = "&#10003; DONE — SEE REPORT";
     note.textContent = `rendered ${state.preset} · ${state.intensity}% → ${out != null ? out.toFixed(1) : "–"} LUFS`;
@@ -694,4 +727,5 @@ document.addEventListener("keydown", (e) => {
 
 // boot: NO SIGNAL until a file is analysed
 updateAdvancedLabels();
+updateFinalizeLabels();
 showDrop(true);

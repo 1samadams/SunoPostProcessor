@@ -480,7 +480,42 @@ def _controls_from_request(data: dict):
             static_db = min(0.0, float(data["static_db"]))
         except (KeyError, TypeError, ValueError):
             abort(400, "custom mode needs numeric threshold_pctl, ratio and static_db")
-    return preset, intensity, threshold_pctl, ratio, static_db
+
+    # optional Finalize stages (off at 0); both affect preview and process
+    def _amt(key):
+        try:
+            return max(0.0, min(100.0, float(data.get(key, 0) or 0)))
+        except (TypeError, ValueError):
+            abort(400, f"{key} must be a number 0-100")
+    deess_amount = _amt("deess_amount")
+    glue_amount = _amt("glue_amount")
+    return preset, intensity, threshold_pctl, ratio, static_db, deess_amount, glue_amount
+
+
+_OUT_FORMATS = {"wav", "flac"}
+_OUT_BITS = {16, 24}
+_OUT_SR = {"source", "44100", "48000"}
+
+
+def _output_opts(data: dict):
+    """Parse download format options: container, bit depth, sample rate.
+
+    Defaults reproduce the previous behaviour exactly: 24-bit WAV at the source
+    sample rate. Only the download is affected -- processing always runs at the
+    source rate so the whole-track references stay valid."""
+    fmt = str(data.get("out_format", "wav")).lower()
+    if fmt not in _OUT_FORMATS:
+        abort(400, "out_format must be wav or flac")
+    try:
+        bits = int(data.get("out_bits", 24))
+    except (TypeError, ValueError):
+        abort(400, "out_bits must be 16 or 24")
+    if bits not in _OUT_BITS:
+        abort(400, "out_bits must be 16 or 24")
+    sr_req = str(data.get("out_sr", "source")).lower()
+    if sr_req not in _OUT_SR:
+        abort(400, "out_sr must be source, 44100 or 48000")
+    return fmt, bits, sr_req
 
 
 # ---------------------------------------------------------------------------
@@ -549,8 +584,18 @@ def upload():
         "input_lufs": None if not np.isfinite(input_lufs) else round(float(input_lufs), 2),
         "input_tp": round(float(input_tp), 2),
     }
+    # de-ess uses a fixed ~5-9 kHz band (not the adaptive de-harsh band); its
+    # own whole-track envelope reference keeps a preview segment matched to the
+    # full render, exactly like the de-harsh reference.
+    try:
+        deess_env_db_ref = dsp.deess_envelope_db(audio, sr)
+    except Exception:  # noqa: BLE001
+        app.logger.exception("deess reference failed")
+        deess_env_db_ref = None
+
     _remember(_UPLOADS, uid, {
         "path": path, "meta": meta, "env_db_ref": env_db_ref,
+        "deess_env_db_ref": deess_env_db_ref,
         "band": list(band) if band is not None else None, "mud_gain": mud_gain,
         "hpf_hz": hpf_hz, "declip": bool(do_declip),
         "gain_lufs": None if not np.isfinite(gain_lufs) else float(gain_lufs),
@@ -597,7 +642,8 @@ def preview():
     data = request.get_json(silent=True) or {}
     rec = _get_upload(data.get("id", ""))
     meta = rec["meta"]
-    preset, intensity, threshold_pctl, ratio, static_db = _controls_from_request(data)
+    (preset, intensity, threshold_pctl, ratio, static_db,
+     deess_amount, glue_amount) = _controls_from_request(data)
 
     try:
         dur = float(data.get("duration", 10))
@@ -620,6 +666,8 @@ def preview():
         threshold_pctl=threshold_pctl, ratio=ratio, static_db=static_db,
         env_db_ref=env_ref, measured_lufs=gain_lufs, band=band, mud_gain=mud_gain,
         hpf_hz=rec.get("hpf_hz"), do_declip=rec.get("declip", False),
+        deess_amount=deess_amount, deess_env_db_ref=rec.get("deess_env_db_ref"),
+        glue_amount=glue_amount,
     )
     # level-matched original (same loudness gain + ceiling, no EQ) for a fair A/B
     original = dsp.normalize_loudness(seg, sr, measured_lufs=gain_lufs)
@@ -668,7 +716,9 @@ def preview():
 def process_full():
     data = request.get_json(silent=True) or {}
     rec = _get_upload(data.get("id", ""))
-    preset, intensity, threshold_pctl, ratio, static_db = _controls_from_request(data)
+    (preset, intensity, threshold_pctl, ratio, static_db,
+     deess_amount, glue_amount) = _controls_from_request(data)
+    out_fmt, out_bits, out_sr_req = _output_opts(data)
 
     audio, sr = sf.read(rec["path"], always_2d=False)
     band = tuple(rec["band"]) if rec.get("band") else None
@@ -677,20 +727,39 @@ def process_full():
     processed = dsp.process(audio, sr, preset=preset, intensity=intensity,
                             threshold_pctl=threshold_pctl, ratio=ratio,
                             static_db=static_db, band=band, mud_gain=rec.get("mud_gain"),
-                            hpf_hz=hpf_hz, do_declip=do_declip)
+                            hpf_hz=hpf_hz, do_declip=do_declip,
+                            deess_amount=deess_amount,
+                            deess_env_db_ref=rec.get("deess_env_db_ref"),
+                            glue_amount=glue_amount)
 
-    out_lufs = dsp.integrated_lufs(processed, sr)
-    out_tp = dsp.true_peak_db(processed, sr)
+    # output sample rate: process at source rate (all whole-track references
+    # hold), then resample and RE-LIMIT true peak at the final rate, since
+    # resampling can create new inter-sample peaks the first limiter never saw.
+    out_sr = sr if out_sr_req == "source" else int(out_sr_req)
+    if out_sr != sr:
+        processed, out_sr = dsp.resample_to(processed, sr, out_sr)
+        processed = dsp.limit_true_peak(processed, out_sr, -1.0)
 
+    out_lufs = dsp.integrated_lufs(processed, out_sr)
+    out_tp = dsp.true_peak_db(processed, out_sr)
+
+    # write: dither only when truncating to 16-bit (24-bit floor is inaudible)
+    to_write = dsp.dither_tpdf(processed, 16) if out_bits == 16 else processed
+    subtype = "PCM_16" if out_bits == 16 else "PCM_24"
     did = uuid.uuid4().hex
-    out_path = os.path.join(_TMP, f"{did}_out.wav")
-    sf.write(out_path, processed, sr, subtype="PCM_24")
+    ext = "flac" if out_fmt == "flac" else "wav"
+    out_path = os.path.join(_TMP, f"{did}_out.{ext}")
+    sf.write(out_path, to_write, out_sr, format=out_fmt.upper(), subtype=subtype)
     base = os.path.splitext(os.path.basename(data.get("filename", "track")))[0] or "track"
-    _remember(_DOWNLOADS, did, {"path": out_path, "name": f"{base}_processed.wav"})
+    _remember(_DOWNLOADS, did, {
+        "path": out_path, "name": f"{base}_processed.{ext}",
+        "mimetype": "audio/flac" if out_fmt == "flac" else "audio/wav",
+    })
 
-    scorecard = _scorecard(audio, processed, sr, rec, out_lufs, out_tp, n_clip)
+    scorecard = _scorecard(audio, sr, processed, out_sr, rec, out_lufs, out_tp, n_clip)
     return jsonify({
         "download_id": did,
+        "format": {"container": ext, "bits": out_bits, "sr": out_sr},
         "metrics": {
             "output_lufs": None if not np.isfinite(out_lufs) else round(float(out_lufs), 2),
             "output_tp": round(float(out_tp), 2),
@@ -701,15 +770,18 @@ def process_full():
     })
 
 
-def _scorecard(audio, processed, sr, rec, out_lufs, out_tp, n_clip_repaired):
-    """Objective before/after report so results are verifiable without ears."""
+def _scorecard(audio, in_sr, processed, out_sr, rec, out_lufs, out_tp, n_clip_repaired):
+    """Objective before/after report so results are verifiable without ears.
+
+    `audio` is at the source rate `in_sr`; `processed` may have been resampled
+    to `out_sr`, so each harshness measurement uses its own rate."""
     def item(label, ok, detail):
         return {"label": label, "ok": bool(ok), "detail": detail}
 
     in_lufs = rec["meta"]["input_lufs"]
     in_tp = rec["meta"]["input_tp"]
-    h_in = dsp.harshness_index(np.asarray(audio, dtype=np.float64), sr)
-    h_out = dsp.harshness_index(np.asarray(processed, dtype=np.float64), sr)
+    h_in = dsp.harshness_index(np.asarray(audio, dtype=np.float64), in_sr)
+    h_out = dsp.harshness_index(np.asarray(processed, dtype=np.float64), out_sr)
     corr = _mono_correlation(np.asarray(audio, dtype=np.float64))
     dc = float(np.mean(audio))
     h_dir = "↓ reduced" if h_out < h_in - 1 else ("↑ raised" if h_out > h_in + 1
@@ -737,8 +809,8 @@ def download(did: str):
         rec = _DOWNLOADS.get(did)
     if rec is None:
         abort(404, "result not found (it may have expired) -- process again")
-    return send_file(rec["path"], mimetype="audio/wav", as_attachment=True,
-                     download_name=rec["name"])
+    return send_file(rec["path"], mimetype=rec.get("mimetype", "audio/wav"),
+                     as_attachment=True, download_name=rec["name"])
 
 
 @app.errorhandler(400)

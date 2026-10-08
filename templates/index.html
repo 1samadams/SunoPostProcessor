@@ -201,6 +201,46 @@
           </div>
         </details>
 
+        <!-- finalize: optional de-ess / glue + output format -->
+        <details class="card advanced finalize">
+          <summary class="adv-sum">FINALIZE &middot; DE-ESS / GLUE / OUTPUT &middot; <span class="opt">optional</span></summary>
+          <div class="adv-body">
+            <div class="adv-row">
+              <div class="block-lab row"><span>DE-ESS &middot; SIBILANCE</span><span id="deess-val" class="val">off</span></div>
+              <input id="deess" type="range" min="0" max="100" value="0" step="1">
+            </div>
+            <div class="adv-row">
+              <div class="block-lab row"><span>GLUE / WARMTH</span><span id="glue-val" class="val">off</span></div>
+              <input id="glue" type="range" min="0" max="100" value="0" step="1">
+            </div>
+            <p class="adv-hint">De-ess = dynamic sibilance tamer (~5&ndash;9 kHz), catches vocal &ldquo;ess&rdquo;/&ldquo;tss&rdquo; peaks only. Glue = gentle bus compression + valve/transformer warmth. Both off by default &middot; they preview live &middot; loudness still normalizes to &minus;14 LUFS / &minus;1 dBTP after.</p>
+            <div class="out-grid">
+              <div class="out-col">
+                <div class="block-lab">FORMAT</div>
+                <div id="out-format" class="segmented sm">
+                  <button type="button" class="seg" data-fmt="wav" data-active="1">WAV</button>
+                  <button type="button" class="seg" data-fmt="flac">FLAC</button>
+                </div>
+              </div>
+              <div class="out-col">
+                <div class="block-lab">BIT DEPTH</div>
+                <div id="out-bits" class="segmented sm">
+                  <button type="button" class="seg" data-bits="24" data-active="1">24</button>
+                  <button type="button" class="seg" data-bits="16">16</button>
+                </div>
+              </div>
+              <div class="out-col">
+                <div class="block-lab">RATE</div>
+                <div id="out-sr" class="segmented sm">
+                  <button type="button" class="seg" data-sr="source" data-active="1">SRC</button>
+                  <button type="button" class="seg" data-sr="44100">44.1</button>
+                  <button type="button" class="seg" data-sr="48000">48</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </details>
+
         <!-- GR ladder + process -->
         <div class="card export">
           <div class="block-lab row exp-lab"><span>GR LEVEL</span><span id="gr-ladder-scale">&minus;8 dB FS</span></div>
