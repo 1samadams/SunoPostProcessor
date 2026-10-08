@@ -396,6 +396,53 @@ def _analyze(audio: np.ndarray, sr: int, duration: float):
     if sib.get("present"):
         reasons.append(sib["reason"] + f" → de-ess {deess_amount:.0f}%")
 
+    # Structured plan: each step is WHAT we'll do + a plain-English WHY + the
+    # technical DETAIL (the measurement). Ordered like the processing chain so
+    # the banner reads top-to-bottom as the signal flow. The UI shows action +
+    # why always; detail behind a "numbers" toggle.
+    plan = []
+    if do_declip:
+        plan.append({"kind": "cleanup", "action": "Repair clipping",
+            "why": "The source clips in places — we rebuild the flattened peaks before anything else.",
+            "detail": f"{n_clip:,} clipped samples reconstructed by interpolation"})
+    deharsh_why = {
+        "Off": "The top end is already smooth — no metallic sheen worth taming.",
+        "Gentle": "A mild metallic edge in the high-mids.",
+        "Standard": "A moderate metallic sheen in the high-mids — the classic Suno sizzle.",
+        "Aggressive": "A strong, sizzly high-mid buildup.",
+    }[preset]
+    if preset != "Off":
+        deharsh_why += (" It reads as a steady sheen, so a gentle always-on cut does most of the work."
+                        if crest < 6 else
+                        " It's spiky, so the cut stays dynamic — only grabbing the peaks."
+                        if crest > 12 else
+                        " It's a mix of steady and spiky, so a blend of always-on and dynamic.")
+    deharsh_action = ("De-harsh · off" if preset == "Off" else f"De-harsh · {preset.lower()}"
+                      + (f" @ {band[0]/1000:.1f}–{band[1]/1000:.1f} kHz" if band != _DEFAULT_BAND else ""))
+    plan.append({"kind": "deharsh", "action": deharsh_action, "why": deharsh_why,
+                 "detail": f"high-mids sit {brightness:+.0f} dB vs the mids · envelope crest {crest:.0f} dB"
+                           + (f" · resonance ~{(f0 or 0)/1000:.1f} kHz" if band != _DEFAULT_BAND and f0 else "")})
+    if sib.get("present"):
+        plan.append({"kind": "deess",
+            "action": f"De-ess · {deess_amount:.0f}% @ {sib['centre_hz']/1000:.1f} kHz",
+            "why": "Sharp vocal ‘ess’/‘tss’ peaks stand out up top — easing just those, not the whole top end.",
+            "detail": f"sibilance crest {sib['crest']:.0f} dB, {sib['excess']:+.0f} dB vs mids · dynamic, peaks only"})
+    elif sib.get("reason", "").startswith("HF is steady"):
+        plan.append({"kind": "deess-off", "action": "De-ess · off",
+            "why": "The high-end energy here is steady (cymbals/air), not vocal sibilance — de-essing it would just dull it.",
+            "detail": sib["reason"]})
+    if mud_gain is not None:
+        plan.append({"kind": "mud", "action": f"Mud cut · {mud_gain:.1f} dB",
+            "why": "A touch of low-mid boxiness around 300 Hz — a gentle wide cut opens it up without thinning the warmth.",
+            "detail": f"200–400 Hz build-up → {mud_gain:.1f} dB wide (Q≈1) cut, applied automatically"})
+    if hpf_hz:
+        plan.append({"kind": "cleanup", "action": f"High-pass · {hpf_hz:.0f} Hz",
+            "why": "Inaudible sub-bass rumble is eating loudness headroom — a gentle high-pass frees it with no audible change.",
+            "detail": f"zero-phase high-pass below {hpf_hz:.0f} Hz"})
+    plan.append({"kind": "loudness", "action": "Normalize · −14 LUFS / −1 dBTP",
+        "why": "Set a consistent streaming level (Spotify's target) without crushing the dynamics.",
+        "detail": "match integrated loudness to −14 LUFS, hold the true-peak ceiling at −1 dBTP"})
+
     suggest = {
         "preset": preset, "intensity": 100, "custom": custom,
         "static_db": static_db, "threshold_pctl": threshold_pctl, "ratio": ratio,
@@ -407,6 +454,7 @@ def _analyze(audio: np.ndarray, sr: int, duration: float):
         "deess_band": [round(deess_band[0], 1), round(deess_band[1], 1)] if deess_band else None,
         "deess_display": (f"{sib['centre_hz']/1000:.1f} kHz" if sib.get("present") else None),
         "sibilance": sib,
+        "plan": plan,
         "measured": {"brightness": round(brightness, 1), "crest": round(crest, 1)},
     }
     return (band, mud_gain, env_db_ref, hpf_hz, do_declip,

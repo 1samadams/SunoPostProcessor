@@ -24,6 +24,7 @@
       <span class="model">MODEL&nbsp;SA-14</span>
       <div class="spacer"></div>
       <div id="topfile" class="topfile"><span class="fdot"></span><span id="topfile-text">no signal</span></div>
+      <button type="button" id="help-btn" class="help-btn" aria-label="Help &amp; glossary">? HELP</button>
       <button type="button" id="eject" class="eject">&#9098; EJECT</button>
     </header>
 
@@ -86,10 +87,10 @@
         <!-- readouts -->
         <div class="card readouts">
           <div class="ro-grid">
-            <div class="ro"><div class="ro-lab">IN &middot; LUFS</div><div id="m-in" class="ro-val">&minus;&ndash;</div></div>
-            <div class="ro"><div class="ro-lab">OUT &middot; LUFS</div><div id="m-out" class="ro-val">&minus;14.0</div></div>
-            <div class="ro"><div class="ro-lab">TRUE PEAK</div><div id="m-tp" class="ro-val">&minus;&ndash;</div></div>
-            <div class="ro"><div class="ro-lab">DE-HARSH</div><div id="m-dh" class="ro-val ro-val2">0.0</div></div>
+            <div class="ro"><div class="ro-lab">IN &middot; LUFS <button class="info" data-tip="Input loudness in LUFS (how loud the track is perceived, ITU-R BS.1770). Suno exports land anywhere from −9 to −16.">?</button></div><div id="m-in" class="ro-val">&minus;&ndash;</div></div>
+            <div class="ro"><div class="ro-lab">OUT &middot; LUFS <button class="info" data-tip="Output loudness after processing. We normalize to −14 LUFS — Spotify's streaming target — so your tracks sit consistently.">?</button></div><div id="m-out" class="ro-val">&minus;14.0</div></div>
+            <div class="ro"><div class="ro-lab">TRUE PEAK <button class="info" data-tip="The real peak level including inter-sample peaks (measured 4× oversampled). We hold it at or below −1 dBTP so it won't clip on streaming playback.">?</button></div><div id="m-tp" class="ro-val">&minus;&ndash;</div></div>
+            <div class="ro"><div class="ro-lab">DE-HARSH <button class="info" data-tip="How much the de-harsh stage is pulling down the harsh band right now, in dB. Negative = actively taming; 0 = idle/Off.">?</button></div><div id="m-dh" class="ro-val ro-val2">0.0</div></div>
           </div>
           <div class="gauges">
             <div class="gauge-col">
@@ -110,14 +111,15 @@
           </div>
         </div>
 
-        <!-- auto analysis ticker -->
+        <!-- auto analysis: the plan (what we'll do & why) -->
         <div id="suggest" class="card ticker hidden">
           <div class="ticker-top">
             <span class="badge-auto">AUTO</span>
-            <span id="sug-title" class="ticker-title">&mdash;</span>
+            <span id="sug-title" class="ticker-title">what we&rsquo;ll do &amp; why</span>
             <span id="sug-conf" class="badge-conf hidden">BORDERLINE</span>
+            <button type="button" id="sug-numbers" class="numbers-tog" aria-pressed="false" title="show the measurements behind each step">NUMBERS</button>
           </div>
-          <div id="sug-sub" class="ticker-sub"></div>
+          <div id="sug-plan" class="plan"></div>
           <div id="sug-note" class="ticker-note hidden"></div>
         </div>
 
@@ -139,7 +141,7 @@
 
         <!-- function selector -->
         <div class="block">
-          <div class="block-lab">FUNCTION &middot; DE-HARSH</div>
+          <div class="block-lab">FUNCTION &middot; DE-HARSH <button class="info" data-tip="Tames the metallic 3–6 kHz sheen common in Suno exports. Mostly dynamic (engages on spikes) plus a small always-on cut for steady sheen. Off / Gentle / Standard / Aggressive.">?</button></div>
           <div id="presets" class="segmented">
             <button type="button" class="seg" data-preset="Off">OFF</button>
             <button type="button" class="seg" data-preset="Gentle">GTL</button>
@@ -150,13 +152,13 @@
 
         <!-- intensity -->
         <div class="block">
-          <div class="block-lab row"><span>GAIN / INTENSITY</span><span id="intensity-val" class="val">100%</span></div>
+          <div class="block-lab row"><span>GAIN / INTENSITY <button class="info" data-tip="Scales the whole active de-harsh preset up or down (0–150%). 0% = bypass; 100% = the preset as tabled; higher grabs more and cuts harder — for tracks that sit between two presets.">?</button></span><span id="intensity-val" class="val">100%</span></div>
           <input id="intensity" type="range" min="0" max="150" value="100" step="1">
         </div>
 
         <!-- source select -->
         <div class="block">
-          <div class="block-lab">SOURCE SELECT</div>
+          <div class="block-lab">SOURCE SELECT <button class="info" data-tip="What you're hearing. A·ORIG = your file, level-matched (no EQ) for a fair comparison. B·PROC = the processed version. C·REM = exactly what's being removed, amplified — only hiss/sizzle means the cut is surgical; music/vocals means it's cutting too much.">?</button></div>
           <div class="source">
             <button type="button" id="ab-orig" class="src" data-active="1"><span class="led"></span>A &middot; ORIG</button>
             <button type="button" id="ab-proc" class="src"><span class="led"></span>B &middot; PROC</button>
@@ -206,11 +208,11 @@
           <summary class="adv-sum">FINALIZE &middot; DE-ESS / GLUE / OUTPUT &middot; <span class="opt">optional</span></summary>
           <div class="adv-body">
             <div class="adv-row">
-              <div class="block-lab row"><span>DE-ESS &middot; SIBILANCE</span><span id="deess-val" class="val">off</span></div>
+              <div class="block-lab row"><span>DE-ESS &middot; SIBILANCE <button class="info" data-tip="Tames harsh vocal &lsquo;ess&rsquo;/&lsquo;tss&rsquo; sounds (~5–9 kHz), dynamically — only on the sibilant peaks. The tuner suggests an amount only when it detects real sibilance; it leaves cymbals/air alone.">?</button></span><span id="deess-val" class="val">off</span></div>
               <input id="deess" type="range" min="0" max="100" value="0" step="1">
             </div>
             <div class="adv-row">
-              <div class="block-lab row"><span>GLUE / WARMTH</span><span id="glue-val" class="val">off</span></div>
+              <div class="block-lab row"><span>GLUE / WARMTH <button class="info" data-tip="Optional mastering finish: gentle bus compression (glues the mix together) plus soft valve/transformer-style saturation (adds warmth and density). Off by default; a taste choice, not a loudness boost.">?</button></span><span id="glue-val" class="val">off</span></div>
               <input id="glue" type="range" min="0" max="100" value="0" step="1">
             </div>
             <p class="adv-hint">De-ess = dynamic sibilance tamer (~5&ndash;9 kHz), catches vocal &ldquo;ess&rdquo;/&ldquo;tss&rdquo; peaks only. Glue = gentle bus compression + valve/transformer warmth. Both off by default &middot; they preview live &middot; loudness still normalizes to &minus;14 LUFS / &minus;1 dBTP after.</p>
@@ -263,6 +265,39 @@
   </div>
 </div>
 
+<!-- help / glossary overlay -->
+<div id="help" class="help-overlay hidden" role="dialog" aria-modal="true" aria-label="Help and glossary">
+  <div class="help-card">
+    <div class="help-top">
+      <span class="help-title">SUNO<span class="logo-sep">::</span>ANALYZER &middot; HELP</span>
+      <button type="button" id="help-close" class="help-close" aria-label="Close help">&#10005;</button>
+    </div>
+    <div class="help-scroll">
+      <h3 class="help-h">HOW IT WORKS</h3>
+      <ol class="help-steps">
+        <li><b>Drop a file</b> &mdash; WAV, FLAC, AIFF, OGG or MP3. The whole track is analysed on upload.</li>
+        <li><b>AUTO sets a starting point</b> &mdash; the smart tuner picks a de-harsh preset, the mud cut, and (only if it hears sibilance) de-ess, and shows the reason for each under <b>AUTO</b>. Tap <b>NUMBERS</b> there to see the measurements.</li>
+        <li><b>Tune &amp; A/B</b> &mdash; preview a 10/15/30&nbsp;s clip (scrub to any start). Switch <b>SOURCE</b> between <b>A&middot;ORIG</b> (your file, level-matched), <b>B&middot;PROC</b> (processed) and <b>C&middot;REM</b> (exactly what's removed). Nudge the preset/intensity, or open <b>ADVANCED</b> / <b>FINALIZE</b> for hand-tuning.</li>
+        <li><b>Export</b> &mdash; render the full track to your chosen format and download it with a before/after report card.</li>
+      </ol>
+      <h3 class="help-h">GLOSSARY</h3>
+      <dl class="help-gloss">
+        <dt>LUFS</dt><dd>Perceived loudness (ITU-R BS.1770). We normalize to <b>&minus;14 LUFS</b>, Spotify's streaming target, so tracks sit at a consistent level.</dd>
+        <dt>True peak (dBTP)</dt><dd>The real peak including inter-sample peaks (measured 4&times; oversampled). Held at <b>&minus;1 dBTP</b> so playback won't clip.</dd>
+        <dt>De-harsh</dt><dd>Tames the metallic <b>3&ndash;6 kHz</b> sheen from AI generation. Mostly dynamic (acts on spikes) plus a small always-on cut for steady sheen.</dd>
+        <dt>De-ess</dt><dd>Tames harsh vocal sibilance (<b>~5&ndash;9 kHz</b> &ldquo;ess&rdquo;/&ldquo;tss&rdquo;), dynamically and only on the peaks. Suggested only when real sibilance is detected.</dd>
+        <dt>Mud cut</dt><dd>A small, wide <b>200&ndash;400 Hz</b> cut for low-mid boxiness. Automatic, depth set per track.</dd>
+        <dt>Glue / warmth</dt><dd>Optional mastering finish: gentle bus compression + soft valve/transformer saturation. Adds density/warmth; off by default.</dd>
+        <dt>Intensity</dt><dd>Scales the active de-harsh preset (0&ndash;150%). 0 = bypass, 100 = as tabled, higher = grabs more.</dd>
+        <dt>REM (Removed)</dt><dd>Plays exactly what the processing takes out, amplified. Only hiss/sizzle = surgical; music/vocals = cutting too much.</dd>
+        <dt>Harshness index</dt><dd>A 0&ndash;100 gauge of how much the top end pokes above the mids. Watch the before&rarr;after direction, not the absolute number.</dd>
+      </dl>
+      <p class="help-foot">Everything except loudness &amp; mud is tunable. The tuner never overrides a choice you make &mdash; change any control and it steps aside.</p>
+    </div>
+  </div>
+</div>
+
+<span id="tip" class="tip hidden" role="tooltip"></span>
 <p id="toast" class="toast hidden"></p>
 <script src="/static/app.js"></script>
 </body>
