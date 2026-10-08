@@ -44,18 +44,26 @@ below); de-ess and glue are optional, user-opt-in, off by default (see
 Both are track properties (server-side, not user controls), applied only when
 the analysis flags them; a clean track gets neither.
 
-**Optional finalize stages (user opt-in, OFF by default):** two mastering-style
-stages exposed in a collapsed **Finalize** panel, both defaulting to off so the
-default chain is unchanged. They preview live and are scaled by a single 0–100
-dial each. The smart tuner does *not* auto-set them (it has no sibilance
-detector yet) — they are deliberate manual choices.
-- **De-ess** (`deess`) — a dynamic sibilance reducer on ~5–9 kHz for vocal
-  "ess"/"tss" peaks. Same single-band dynamic mechanism as de-harsh but
-  **purely dynamic** (no static cut — a static HF cut would dull every 's'/'t'
-  and cymbal) and with a faster follower, since sibilance is transient. Its
-  percentile threshold uses a whole-track reference (`deess_envelope_db`, fixed
-  band) so a preview segment matches the full render, exactly like de-harsh.
-  Runs right after de-harsh.
+**Optional finalize stages (OFF by default):** two mastering-style stages
+exposed in a collapsed **Finalize** panel, both defaulting to off so the default
+chain is unchanged. They preview live and are scaled by a single 0–100 dial
+each. **Glue** stays a deliberate manual choice. **De-ess is tuner-driven:** a
+sibilance detector (`_detect_sibilance`, app.py) runs at upload, and when it
+finds spiky vocal sibilance the tuner suggests a de-ess amount + an adaptive
+band centred on it (shown in the AUTO banner, slider pre-set, fully
+overridable). When it finds only steady HF (cymbal/hi-hat wash or air) or none,
+it suggests 0 — so turning the stage on never dulls non-sibilant content by
+default. The detector is a heuristic (keys on transient-ness = de-ess band
+envelope crest, plus HF presence vs mids), not a vocal classifier — the A/B
+"Removed" monitor stays the final arbiter.
+- **De-ess** (`deess`) — a dynamic sibilance reducer for vocal "ess"/"tss"
+  peaks. Same single-band dynamic mechanism as de-harsh but **purely dynamic**
+  (no static cut — a static HF cut would dull every 's'/'t' and cymbal) and with
+  a faster follower, since sibilance is transient. The band is **adaptive**: the
+  detector centres it (~±⅓ octave) on the measured sibilance frequency (defaults
+  ~5–9 kHz), a server-side track property like the de-harsh band. Its percentile
+  threshold uses a whole-track reference (`deess_envelope_db` for that band) so a
+  preview segment matches the full render. Runs right after de-harsh.
 - **Glue** (`glue`) — gentle slow stereo-linked bus compression (low ratio,
   rides the loud body) + soft saturation (tanh odd harmonics plus a small
   asymmetry for even, "valve/transformer" warmth). Adds density/warmth, NOT a
@@ -188,6 +196,13 @@ off short **10 / 15 / 30 s** clips with a start-position scrubber:
     dynamic). **Off** when the band is already tame.
   - **Mud depth** — adaptive from the 200–400 Hz buildup (0.5–3 dB), also a
     server-side track property.
+  - **De-ess** — a sibilance detector (`_detect_sibilance`) finds the sibilance
+    centre in ~5–10 kHz and measures how transient it is (de-ess band envelope
+    crest). Spiky "ess" peaks that poke above the HF floor → suggest a de-ess
+    amount (scaled by crest) + an adaptive band centred on them; a steady
+    cymbal/air wash or no HF → suggest 0 (leaves cymbals intact). Shown in the
+    banner and pre-set on the Finalize dial, always overridable. (Glue is not
+    auto-set — it's a taste choice.)
   - **When** — finds the loudest sustained band moment and **auto-jumps the
     preview scrubber there** so the A/B lands on the worst of it.
   - **Confidence** — flags borderline calls (within ~1.2 dB of a preset

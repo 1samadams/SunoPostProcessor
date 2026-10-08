@@ -304,6 +304,15 @@ function applySuggestion(sug) {
   $("static").value = state.static; $("threshold").value = state.threshold; $("ratio").value = state.ratio;
   updateAdvancedLabels(); markPresetModified(sug.custom);
 
+  // de-ess: the tuner suggests an amount when it detects sibilance (0 = none);
+  // reflect it on the dial so the preview + commit use it. Fully overridable.
+  if (sug.deess_amount != null) {
+    state.deess = sug.deess_amount;
+    $("deess").value = state.deess;
+    updateFinalizeLabels();
+    if (state.deess > 0) $("finalize")?.setAttribute("open", "");  // reveal when engaged
+  }
+
   // auto-jump the preview to where the harshness actually lives
   if (sug.harsh_start != null) {
     const max = Math.max(0, state.duration - state.dur);
@@ -320,6 +329,7 @@ function applySuggestion(sug) {
   const tail = [];
   if (sug.band_display && sug.preset !== "Off") tail.push(`targeting ${sug.band_display}`);
   if (sug.mud_db != null) tail.push(`mud ${sug.mud_db} dB`);
+  if (sug.deess_amount > 0) tail.push(`de-ess ${sug.deess_amount}%${sug.deess_display ? ` @ ${sug.deess_display}` : ""}`);
   if (sug.harsh_start) tail.push(`preview @ ${fmtTime(sug.harsh_start)}`);
   if (tail.length) lines.push({ text: tail.join(" · "), cleanup: false });
 
