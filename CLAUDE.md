@@ -215,6 +215,16 @@ off short **10 / 15 / 30 s** clips with a start-position scrubber:
   Heuristic thresholds are transparent (measured numbers ride in the reasons)
   and default to Standard when unsure; any manual control change dismisses the
   banner. The tuner never overrides a choice you make.
+  - **How it's shown** — the AUTO banner renders a **structured plan** (`plan`
+    in the suggest payload): one row per step in processing order, each with the
+    **action** (what), a **plain-English why**, and the **measurement** behind it
+    (`detail`) hidden behind a per-card **NUMBERS** toggle so the default read
+    stays clean for non-engineers. Rows are colour-coded by stage.
+- **Help & tooltips** — a header **? HELP** button opens a glossary/how-it-works
+  overlay (LUFS, true peak, de-harsh vs de-ess, mud, glue, Removed monitor,
+  intensity, harshness index). Key controls and readouts carry a small **?**
+  info dot with a **tap-to-reveal tooltip** (click-toggled, so it works on touch,
+  not hover-only). These are plain static copy — no new state or backend.
 - **Gapless A/B**: original, processed, and **Removed** clips play in sync; a
   toggle gates which you hear (aProc is the master clock). The original is
   level-matched (same loudness gain + ceiling, no EQ) so the A/B is honest —

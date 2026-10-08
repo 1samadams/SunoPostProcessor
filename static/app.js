@@ -219,7 +219,6 @@ $("durs").addEventListener("click", (e) => {
 $("intensity").addEventListener("input", (e) => {
   hideSuggestConf();
   state.intensity = +e.target.value; $("intensity-val").textContent = `${state.intensity}%`;
-  $("sug-title").textContent = `${state.preset.toUpperCase()} · ${state.intensity}%`;
   refreshPreview(false);
 });
 $("start").addEventListener("input", (e) => {
@@ -264,6 +263,51 @@ $("ab-orig").addEventListener("click", () => setActive("orig"));
 $("ab-proc").addEventListener("click", () => setActive("proc"));
 $("ab-diff").addEventListener("click", () => setActive("diff"));
 $("play").addEventListener("click", togglePlay);
+
+// AUTO plan: "NUMBERS" reveals the measurement line under each step
+$("sug-numbers").addEventListener("click", (e) => {
+  const on = $("suggest").classList.toggle("show-numbers");
+  e.currentTarget.setAttribute("aria-pressed", on ? "true" : "false");
+});
+
+// help / glossary overlay
+function openHelp(on) {
+  $("help").classList.toggle("hidden", !on);
+}
+$("help-btn").addEventListener("click", () => openHelp(true));
+$("help-close").addEventListener("click", () => openHelp(false));
+$("help").addEventListener("click", (e) => { if (e.target.id === "help") openHelp(false); });
+
+// tap-to-reveal info tooltips (works on touch, unlike hover titles)
+function showTip(el) {
+  const tip = $("tip");
+  tip.textContent = el.getAttribute("data-tip") || "";
+  tip.classList.remove("hidden");
+  const r = el.getBoundingClientRect();
+  const tw = tip.offsetWidth, th = tip.offsetHeight;
+  let left = r.left + r.width / 2 - tw / 2;
+  left = Math.max(8, Math.min(left, window.innerWidth - tw - 8));
+  let top = r.top - th - 8;
+  if (top < 8) top = r.bottom + 8;          // flip below if no room above
+  tip.style.left = `${left}px`;
+  tip.style.top = `${top}px`;
+  tip._for = el;
+}
+const hideTip = () => { $("tip").classList.add("hidden"); $("tip")._for = null; };
+document.addEventListener("click", (e) => {
+  const info = e.target.closest(".info");
+  if (info) {
+    e.preventDefault();
+    if ($("tip")._for === info) { hideTip(); return; }  // toggle off
+    showTip(info);
+  } else if (!e.target.closest("#tip")) {
+    hideTip();
+  }
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { hideTip(); openHelp(false); }
+});
+window.addEventListener("resize", hideTip);
 
 function updateAdvancedLabels() {
   const s = +state.static;
@@ -320,21 +364,16 @@ function applySuggestion(sug) {
     $("start").value = state.start; $("start-val").textContent = fmtTime(state.start);
   }
 
-  $("sug-title").textContent = `${sug.preset.toUpperCase()} · ${sug.intensity}%`;
   $("sug-conf").classList.toggle("hidden", sug.confidence !== "borderline");
 
-  const lines = [];
-  (sug.reasons || []).forEach((r) => lines.push({ text: r, cleanup: false }));
-  (sug.cleanup || []).forEach((r) => lines.push({ text: r, cleanup: true }));
-  const tail = [];
-  if (sug.band_display && sug.preset !== "Off") tail.push(`targeting ${sug.band_display}`);
-  if (sug.mud_db != null) tail.push(`mud ${sug.mud_db} dB`);
-  if (sug.deess_amount > 0) tail.push(`de-ess ${sug.deess_amount}%${sug.deess_display ? ` @ ${sug.deess_display}` : ""}`);
-  if (sug.harsh_start) tail.push(`preview @ ${fmtTime(sug.harsh_start)}`);
-  if (tail.length) lines.push({ text: tail.join(" · "), cleanup: false });
-
-  $("sug-sub").innerHTML = lines.map((l) =>
-    `<span class="rline${l.cleanup ? " cleanup" : ""}">${esc(l.text)}</span>`).join("");
+  // the plan: each step is an action + plain-English why + (toggled) the number
+  const plan = sug.plan && sug.plan.length ? sug.plan : [];
+  $("sug-plan").innerHTML = plan.map((p) =>
+    `<div class="plan-item" data-kind="${esc(p.kind || "")}">`
+    + `<div class="plan-act">${esc(p.action)}</div>`
+    + `<div class="plan-why">${esc(p.why)}</div>`
+    + (p.detail ? `<div class="plan-detail">${esc(p.detail)}</div>` : "")
+    + `</div>`).join("");
 
   const note = $("sug-note");
   if (sug.band_note) { note.textContent = "⚠ " + sug.band_note; note.classList.remove("hidden"); }

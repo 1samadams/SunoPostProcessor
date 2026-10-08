@@ -31,8 +31,13 @@ Plus optional finishing when you want it — a sibilance-aware **de-ess** and a
 - **Smart tuner:** on upload the whole track is analysed and a starting point is
   auto-applied, with the reasoning shown in a banner — de-harsh preset/strength,
   the adaptive target band, mud depth, and (when vocal sibilance is detected) a
-  suggested **de-ess** amount. A plain-English + technical **track assessment**
-  reads the track like an engineer would.
+  suggested **de-ess** amount. Each step is shown as a plain-English **what +
+  why**, with a **NUMBERS** toggle to reveal the measurement behind it. A
+  plain-English + technical **track assessment** reads the track like an
+  engineer would.
+- **Built-in help** — a **? HELP** panel (how-it-works + a glossary of every
+  term) and tap-to-reveal **?** tooltips on the controls and readouts, so you
+  don't need to know what LUFS or de-ess means going in
 - **Optional Finalize stages** (off by default, in a collapsed panel):
   - **De-ess** — dynamic sibilance control; the tuner auto-suggests it (and an
     adaptive band) only when it detects spiky vocal "ess" energy, so it won't
