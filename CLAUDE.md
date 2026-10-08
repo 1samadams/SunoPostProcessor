@@ -26,11 +26,13 @@ specific, well-understood problems with AI-generated mixes:
    normalization, not limiting-for-loudness — the point is consistency, not
    crushing the track.
 
-Processing order matters: **[declip] → de-harsh → mud cut → [sub HPF] →
-loudness normalize**. Normalizing before EQ means your gain staging is wrong
-by the time you EQ; always fix the spectral issues first, then set final level
-last. The bracketed cleanup stages (clip repair, subsonic high-pass) only run
-when the smart tuner detects the problem — see below.
+Processing order matters: **[declip] → de-harsh → [de-ess] → mud cut →
+[sub HPF] → [glue] → loudness normalize**. Normalizing before EQ means your
+gain staging is wrong by the time you EQ; always fix the spectral issues first,
+then set final level last. The bracketed stages are conditional: clip repair
+and subsonic high-pass run only when the smart tuner detects the problem (see
+below); de-ess and glue are optional, user-opt-in, off by default (see
+"Optional finalize stages").
 
 **Auto-cleanup (conditional, tuner-decided):**
 - **De-clip** (`declip`) — reconstructs short clipped/flat-topped runs by cubic
@@ -41,6 +43,35 @@ when the smart tuner detects the problem — see below.
   Runs after the EQ, before loudness normalize.
 Both are track properties (server-side, not user controls), applied only when
 the analysis flags them; a clean track gets neither.
+
+**Optional finalize stages (user opt-in, OFF by default):** two mastering-style
+stages exposed in a collapsed **Finalize** panel, both defaulting to off so the
+default chain is unchanged. They preview live and are scaled by a single 0–100
+dial each. The smart tuner does *not* auto-set them (it has no sibilance
+detector yet) — they are deliberate manual choices.
+- **De-ess** (`deess`) — a dynamic sibilance reducer on ~5–9 kHz for vocal
+  "ess"/"tss" peaks. Same single-band dynamic mechanism as de-harsh but
+  **purely dynamic** (no static cut — a static HF cut would dull every 's'/'t'
+  and cymbal) and with a faster follower, since sibilance is transient. Its
+  percentile threshold uses a whole-track reference (`deess_envelope_db`, fixed
+  band) so a preview segment matches the full render, exactly like de-harsh.
+  Runs right after de-harsh.
+- **Glue** (`glue`) — gentle slow stereo-linked bus compression (low ratio,
+  rides the loud body) + soft saturation (tanh odd harmonics plus a small
+  asymmetry for even, "valve/transformer" warmth). Adds density/warmth, NOT a
+  loudness maximizer — it runs right before normalize, so the final −14 LUFS /
+  −1 dBTP are still guaranteed by `normalize_loudness`. This is a deliberate,
+  bounded departure from "normalize, don't limit-for-loudness": the level stage
+  still obeys that rule; glue only changes tone/crest, and only when asked.
+
+**Output format (download only):** the Finalize panel also picks the download
+container (WAV / FLAC), bit depth (24 / 16) and sample rate (source / 44.1 /
+48 kHz). Processing always runs at the source rate so the whole-track
+references stay valid; the chosen sample rate is applied last by resampling
+then **re-running the true-peak limiter** (resampling can create new
+inter-sample peaks). 16-bit output gets TPDF dither (24-bit does not — its
+floor is already inaudible). Defaults reproduce the previous behaviour exactly:
+24-bit WAV at the source rate.
 
 ## Architecture decisions (don't relitigate these without reason)
 

@@ -85,6 +85,59 @@ def make_selftest_signal(sr: int = 44100, dur: float = 4.0) -> np.ndarray:
     return np.column_stack([mono, mono])  # stereo
 
 
+def finalize_selfcheck(audio: np.ndarray, sr: int) -> int:
+    """Exercise the optional Finalize stages + output helpers and assert their
+    invariants. Returns 0 on pass, 1 on failure (so CI catches regressions)."""
+    print("\n  finalize stages (de-ess / glue / output)")
+    print("  " + "-" * 52)
+    fails = 0
+
+    def check(name, ok, detail=""):
+        nonlocal fails
+        print(f"  [{'ok' if ok else 'FAIL'}] {name}{('  ' + detail) if detail else ''}")
+        if not ok:
+            fails += 1
+
+    # bypass: amount 0 must be a true no-op
+    check("de-ess bypass", np.allclose(dsp.deess(audio, sr, 0.0), audio))
+    check("glue bypass", np.allclose(dsp.glue(audio, sr, 0.0), audio))
+
+    # full chain with de-ess + glue still lands on target LUFS / under ceiling
+    ref = dsp.band_envelope_db(audio, sr)
+    dref = dsp.deess_envelope_db(audio, sr)
+    proc = dsp.process(audio, sr, preset="Standard", intensity=100,
+                       env_db_ref=ref, deess_amount=60, deess_env_db_ref=dref,
+                       glue_amount=50)
+    lufs, tp = dsp.integrated_lufs(proc, sr), dsp.true_peak_db(proc, sr)
+    check("loudness on target", abs(lufs + 14.0) <= 0.75, f"{lufs:.2f} LUFS")
+    check("true peak under ceiling", tp <= -1.0 + 0.05, f"{tp:.2f} dBTP")
+
+    # glue adds harmonic content (energy rises outside the fundamental)
+    from scipy import signal as _sg
+    def h2(a):
+        m = a if a.ndim == 1 else a.mean(axis=1)
+        f, pp = _sg.welch(m, fs=sr, nperseg=16384)
+        return 10.0 * np.log10(pp[np.argmin(np.abs(f - 900.0))] + 1e-20)
+    tone = 0.3 * np.sin(2 * np.pi * 300 * np.arange(sr) / sr)
+    tone = np.column_stack([tone, tone])
+    check("glue adds harmonics", h2(dsp.glue(tone, sr, 100)) > h2(tone) + 10.0,
+          f"300Hz 2nd/3rd region {h2(tone):.0f}->{h2(dsp.glue(tone, sr, 100)):.0f} dB")
+
+    # output helpers: resample re-limits under ceiling; dither ~1 LSB; no-op equal
+    r48, rs = dsp.resample_to(proc, sr, 48000)
+    r48 = dsp.limit_true_peak(r48, rs, -1.0)
+    check("resample 48k keeps ceiling", rs == 48000 and dsp.true_peak_db(r48, rs) <= -1.0 + 0.1,
+          f"{rs} Hz {dsp.true_peak_db(r48, rs):.2f} dBTP")
+    same, _ = dsp.resample_to(proc, sr, sr)
+    check("resample same-rate no-op", np.allclose(same, proc))
+    d16 = dsp.dither_tpdf(r48, 16)
+    check("16-bit dither ~1 LSB", float(np.max(np.abs(d16 - r48))) <= 2.0 ** -15 + 1e-9)
+
+    print("  " + "-" * 52)
+    print(f"  finalize self-check: {'PASS' if fails == 0 else f'{fails} FAILED'}")
+    return 1 if fails else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Sanity-check the Suno DSP core.")
     p.add_argument("input", nargs="?", help="input WAV path")
@@ -106,7 +159,7 @@ def main(argv: list[str] | None = None) -> int:
         sf.write(tmp, audio, sr)
         out = os.path.join(os.path.dirname(tmp), "_selftest_processed.wav")
         run_file(tmp, out, args.preset, args.intensity, args.target_lufs, args.ceiling_dbtp)
-        return 0
+        return finalize_selfcheck(audio, sr)
 
     if not args.input:
         p.error("give an input WAV, or use --selftest")
