@@ -216,6 +216,85 @@ def _mono_correlation(audio: np.ndarray) -> float:
     return float(np.clip(np.corrcoef(L, R)[0, 1], -1.0, 1.0))
 
 
+def _detect_sibilance(f: np.ndarray, psd: np.ndarray, audio: np.ndarray, sr: int):
+    """Detect vocal sibilance in ~5-10 kHz; suggest a de-ess band + amount.
+
+    Sibilance is HF energy that is *transient and vocal* -- short "ess"/"tss"
+    peaks that poke above the sustained HF floor. A steady cymbal/hi-hat wash
+    also lives here but is NOT sibilance and must not be de-essed (that just
+    dulls the cymbals). So the detector keys on BOTH:
+      - presence: how much ~5.5-9.5 kHz pokes above the upper-mids (is there any
+        HF to work on), and the frequency of the biggest poke above a smooth
+        trend (the de-ess centre),
+      - transient-ness: the CREST of the de-ess band envelope (pctl98 - median).
+        High crest = spiky "ess" peaks; low crest = steady wash.
+    Both must be satisfied to call it sibilance; otherwise amount is 0 so a
+    non-sibilant track's cymbals/air are left intact even though the stage
+    exists. Returns (band, amount, env_db_ref, info). The band + reference are
+    track properties reused by preview/process, exactly like the de-harsh band.
+
+    Heuristic, not a vocal classifier: it reliably says "spiky HF here" vs
+    "nothing / steady", but can't prove a transient is a vocal 's' and not a
+    hi-hat tick -- the A/B "Removed" monitor stays the final arbiter.
+    """
+    def dens(lo, hi):
+        sel = (f >= lo) & (f < min(hi, sr / 2.0))
+        return 10.0 * np.log10(float(psd[sel].mean()) + 1e-20) if sel.any() else -120.0
+
+    fmax = min(10500.0, 0.95 * sr / 2.0)
+    if fmax < 6000.0:  # sample rate too low to carry a sibilance region
+        return None, 0.0, dsp.deess_envelope_db(audio, sr), {"present": False,
+                "reason": "sample rate too low for de-ess"}
+
+    # presence + centre: biggest poke above a smooth 2nd-order trend in 5-10 kHz
+    excess_mids = dens(5500, min(9500.0, fmax)) - dens(1500, 4000)
+    sel = (f >= 4000.0) & (f <= fmax)
+    centre, peak_h = 7000.0, 0.0
+    if sel.sum() >= 6:
+        ff, pp = f[sel], 10.0 * np.log10(psd[sel] + 1e-20)
+        logf = np.log10(ff)
+        exc = np.clip(pp - np.polyval(np.polyfit(logf, pp, 2), logf), 0.0, None)
+        reg = ff >= 5000.0
+        if reg.any():
+            idx = np.where(reg)[0]
+            pk = idx[int(np.argmax(exc[idx]))]
+            centre, peak_h = float(ff[pk]), float(exc[pk])
+
+    # de-ess band ~+/- 1/3 octave around the centre, clamped sanely under Nyquist
+    lo, hi = centre / 1.35, centre * 1.35
+    lo, hi = max(4500.0, lo), min(fmax, hi)
+    if hi - lo < 1500.0:
+        c = (lo + hi) / 2.0
+        lo, hi = max(4500.0, c - 800.0), min(fmax, c + 800.0)
+    band = (round(lo / 50) * 50.0, round(hi / 50) * 50.0)
+
+    # transient-ness: crest of the de-ess band envelope (this is also the
+    # reference reused by preview/process for the percentile threshold)
+    env_db_ref = dsp.deess_envelope_db(audio, sr, band=band)
+    crest = (float(np.percentile(env_db_ref, 98) - np.percentile(env_db_ref, 50))
+             if np.asarray(env_db_ref).size > 8 else 0.0)
+
+    present = (excess_mids > -8.0) and (crest >= 5.0) and (peak_h >= 1.0 or excess_mids > -3.0)
+    if not present:
+        reason = (f"HF is steady, not sibilant (crest {crest:.0f} dB) — de-ess would dull it"
+                  if excess_mids > -8.0 else "no significant 5–9 kHz sibilance")
+        return band, 0.0, env_db_ref, {"present": False, "centre_hz": round(centre),
+                "crest": round(crest, 1), "excess": round(excess_mids, 1), "reason": reason}
+
+    amount = float(np.clip((crest - 5.0) * 5.0 + max(0.0, excess_mids) * 1.5, 0.0, 80.0))
+    amount = round(amount / 5.0) * 5.0
+    if amount <= 0.0:
+        return band, 0.0, env_db_ref, {"present": False, "centre_hz": round(centre),
+                "crest": round(crest, 1), "excess": round(excess_mids, 1),
+                "reason": "borderline sibilance — left off"}
+    strength = "strong" if amount >= 55 else ("moderate" if amount >= 30 else "mild")
+    reason = (f"{strength} sibilance ~{centre/1000:.1f} kHz "
+              f"(crest {crest:.0f} dB, {excess_mids:+.0f} dB vs mids)")
+    return band, amount, env_db_ref, {"present": True, "centre_hz": round(centre),
+            "crest": round(crest, 1), "excess": round(excess_mids, 1),
+            "amount": amount, "strength": strength, "reason": reason}
+
+
 def _harsh_start(env_db_ref: np.ndarray, duration: float) -> float:
     """Time (s) of the loudest sustained band energy, minus a lead-in -- where
     the preview scrubber should land so you hear the worst of it."""
@@ -300,6 +379,10 @@ def _analyze(audio: np.ndarray, sr: int, duration: float):
                      f"({res_h:.0f} dB over trend) — targeting {band[0]/1000:.1f}"
                      f"–{band[1]/1000:.1f} kHz instead of the usual 3–6 kHz.")
 
+    # de-ess: detect sibilance and suggest a band + amount (0 when there's no
+    # spiky HF worth taming, so cymbals/air on a non-sibilant track stay intact)
+    deess_band, deess_amount, deess_env_db_ref, sib = _detect_sibilance(f, psd, audio, sr)
+
     # cleanup decisions (applied automatically, like band/mud)
     hpf_hz = _detect_rumble(f, psd, sr)
     n_clip = _clip_count(audio)
@@ -310,6 +393,9 @@ def _analyze(audio: np.ndarray, sr: int, duration: float):
     if do_declip:
         cleanup.append(f"repairing {n_clip:,} clipped samples in the source")
 
+    if sib.get("present"):
+        reasons.append(sib["reason"] + f" → de-ess {deess_amount:.0f}%")
+
     suggest = {
         "preset": preset, "intensity": 100, "custom": custom,
         "static_db": static_db, "threshold_pctl": threshold_pctl, "ratio": ratio,
@@ -317,9 +403,14 @@ def _analyze(audio: np.ndarray, sr: int, duration: float):
         "band": [round(band[0], 1), round(band[1], 1)],
         "band_display": f"{band[0]/1000:.1f}–{band[1]/1000:.1f} kHz",
         "mud_db": mud_gain, "harsh_start": harsh_start, "cleanup": cleanup,
+        "deess_amount": deess_amount,
+        "deess_band": [round(deess_band[0], 1), round(deess_band[1], 1)] if deess_band else None,
+        "deess_display": (f"{sib['centre_hz']/1000:.1f} kHz" if sib.get("present") else None),
+        "sibilance": sib,
         "measured": {"brightness": round(brightness, 1), "crest": round(crest, 1)},
     }
-    return band, mud_gain, env_db_ref, hpf_hz, do_declip, suggest
+    return (band, mud_gain, env_db_ref, hpf_hz, do_declip,
+            deess_band, deess_env_db_ref, suggest)
 
 
 def _input_health(audio: np.ndarray, sr: int, input_lufs, input_tp: float) -> list:
@@ -393,9 +484,18 @@ def _assessment(audio: np.ndarray, sr: int, input_lufs, input_tp: float,
     if harsh_idx >= 45:
         tone += (" It reads as a steady sheen." if band_crest < 7
                  else " It reads as transient sibilance/sizzle." if band_crest > 12 else "")
-    items.append({"topic": "Tone", "plain": tone,
-                  "tech": f"3–6 kHz {br:+.0f} dB vs mids · harshness index {harsh_idx}/100 · "
-                          f"top rolls off ~{rolloff:.0f} dB from mids to 5–10 kHz."})
+    sib = sug.get("sibilance") or {}
+    deess_amt = sug.get("deess_amount") or 0
+    tone_tech = (f"3–6 kHz {br:+.0f} dB vs mids · harshness index {harsh_idx}/100 · "
+                 f"top rolls off ~{rolloff:.0f} dB from mids to 5–10 kHz.")
+    if sib.get("present"):
+        tone += (f" Vocal sibilance around {sib['centre_hz']/1000:.1f} kHz — "
+                 f"de-essing it (~{deess_amt:.0f}%).")
+        tone_tech += (f" Sibilance centre ~{sib['centre_hz']/1000:.1f} kHz, "
+                      f"de-ess band crest {sib.get('crest', 0):.0f} dB.")
+    elif top - mid > -6 and sib.get("crest") is not None:
+        tone += " The HF up there reads as steady (cymbals/air), not sibilance — leaving it."
+    items.append({"topic": "Tone", "plain": tone, "tech": tone_tech})
 
     # --- LOUDNESS + DYNAMICS ---
     off = lufs - (-14.0)
@@ -564,11 +664,13 @@ def upload():
     # every preview so a clip matches the full render). Band + mud_gain are
     # track properties kept server-side, not user controls.
     try:
-        band, mud_gain, env_db_ref, hpf_hz, do_declip, suggest = _analyze(audio, sr, duration)
+        (band, mud_gain, env_db_ref, hpf_hz, do_declip,
+         deess_band, deess_env_db_ref, suggest) = _analyze(audio, sr, duration)
     except Exception:  # noqa: BLE001 -- fall back to the default band on failure
         app.logger.exception("analyze failed")
         band, mud_gain, hpf_hz, do_declip, suggest = None, None, None, False, None
         env_db_ref = dsp.band_envelope_db(audio, sr)
+        deess_band, deess_env_db_ref = None, dsp.deess_envelope_db(audio, sr)
 
     # Loudness AFTER the mud cut (chosen depth) -> previews gain off this so the
     # A/B level matches the export. De-harsh's own LUFS effect is negligible.
@@ -584,18 +686,14 @@ def upload():
         "input_lufs": None if not np.isfinite(input_lufs) else round(float(input_lufs), 2),
         "input_tp": round(float(input_tp), 2),
     }
-    # de-ess uses a fixed ~5-9 kHz band (not the adaptive de-harsh band); its
-    # own whole-track envelope reference keeps a preview segment matched to the
-    # full render, exactly like the de-harsh reference.
-    try:
-        deess_env_db_ref = dsp.deess_envelope_db(audio, sr)
-    except Exception:  # noqa: BLE001
-        app.logger.exception("deess reference failed")
-        deess_env_db_ref = None
-
+    # de-ess band is adaptive (the sibilance detector centres it on the actual
+    # "ess" energy); its whole-track envelope reference keeps a preview segment
+    # matched to the full render, exactly like the de-harsh reference. Both are
+    # server-side track properties -- the client only sends the de-ess amount.
     _remember(_UPLOADS, uid, {
         "path": path, "meta": meta, "env_db_ref": env_db_ref,
         "deess_env_db_ref": deess_env_db_ref,
+        "deess_band": list(deess_band) if deess_band is not None else None,
         "band": list(band) if band is not None else None, "mud_gain": mud_gain,
         "hpf_hz": hpf_hz, "declip": bool(do_declip),
         "gain_lufs": None if not np.isfinite(gain_lufs) else float(gain_lufs),
@@ -666,7 +764,9 @@ def preview():
         threshold_pctl=threshold_pctl, ratio=ratio, static_db=static_db,
         env_db_ref=env_ref, measured_lufs=gain_lufs, band=band, mud_gain=mud_gain,
         hpf_hz=rec.get("hpf_hz"), do_declip=rec.get("declip", False),
-        deess_amount=deess_amount, deess_env_db_ref=rec.get("deess_env_db_ref"),
+        deess_amount=deess_amount,
+        deess_band=tuple(rec["deess_band"]) if rec.get("deess_band") else None,
+        deess_env_db_ref=rec.get("deess_env_db_ref"),
         glue_amount=glue_amount,
     )
     # level-matched original (same loudness gain + ceiling, no EQ) for a fair A/B
@@ -729,6 +829,7 @@ def process_full():
                             static_db=static_db, band=band, mud_gain=rec.get("mud_gain"),
                             hpf_hz=hpf_hz, do_declip=do_declip,
                             deess_amount=deess_amount,
+                            deess_band=tuple(rec["deess_band"]) if rec.get("deess_band") else None,
                             deess_env_db_ref=rec.get("deess_env_db_ref"),
                             glue_amount=glue_amount)
 
