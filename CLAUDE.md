@@ -93,8 +93,10 @@ floor is already inaudible). Defaults reproduce the previous behaviour exactly:
   wrapper* over the DSP core, exactly like the CLI — the DSP core is unchanged
   by this pivot. Chosen over FastAPI/Electron/JS-SPA because Flask + gunicorn
   is the conventional, zero-packaging-headache Railway Python path and keeps
-  the dependency set small. Plots (Phase 2) render server-side with matplotlib
-  to PNG and embed in the page — no JS charting dependency.
+  the dependency set small. (Visualizers ended up rendered client-side on a
+  canvas from server-computed magnitudes — no charting library at all, not the
+  originally-planned server-side matplotlib PNGs — so matplotlib is not a
+  dependency.)
 - **Deployment:** Railway via Nixpacks. `Procfile` + `railway.json` define the
   gunicorn start command and a `/health` liveness probe; `nixpacks.toml` pins
   `libsndfile1` so `soundfile` loads on the minimal image. Runs anywhere
@@ -275,9 +277,14 @@ settings between runs.
 - Write one small test/validation script that processes a known WAV and
   prints before/after LUFS and true peak, so DSP changes can be sanity-checked
   without opening the web app (`test_dsp.py`, incl. `--selftest`).
-- No exotic dependencies beyond: numpy, scipy, pyloudnorm, matplotlib,
-  soundfile (for WAV I/O — better format handling than scipy.io.wavfile),
-  plus flask + gunicorn for the web/deploy layer.
+- No exotic dependencies beyond: numpy, scipy, pyloudnorm, soundfile (for WAV
+  I/O — better format handling than scipy.io.wavfile), plus flask + gunicorn
+  for the web/deploy layer. **Pin them to exact versions in `requirements.txt`**
+  (supply-chain safety — a floating version can pull a future bad release);
+  bump deliberately and re-run `python test_dsp.py --selftest`. matplotlib is
+  *not* a current dependency: the visualizers render client-side on a canvas
+  (see below), so no server-side plotting lib is pulled in. Re-add it (pinned)
+  only if server-side PNG plots are ever built.
 
 ## Known open questions (flag these back to the user, don't silently decide)
 - Preset values are the accepted defaults now (not placeholders). Revisit only
