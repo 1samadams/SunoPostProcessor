@@ -1,7 +1,23 @@
-numpy
-scipy
-pyloudnorm
-soundfile
-matplotlib
-flask
-gunicorn
+# Pinned to exact, tested versions for reproducible, supply-chain-safe builds.
+# Rationale: a floating (unpinned) dependency lets a build pull a future
+# release the moment it is published -- including a malicious or compromised
+# one. Exact pins mean the deploy image is always the set verified here.
+#
+# To upgrade: bump a version deliberately, then re-run
+#   python test_dsp.py --selftest
+# to confirm the DSP core still lands on target before committing.
+#
+# Direct dependencies only (transitive deps resolve from these). For maximum
+# supply-chain hardening a fully hash-locked file can be generated with
+# pip-tools / `pip freeze`; kept minimal here to match the project's small,
+# readable dependency set.
+numpy==2.4.6
+scipy==1.17.1
+pyloudnorm==0.2.0
+soundfile==0.14.0
+flask==3.1.3
+gunicorn==26.2.0
+
+# matplotlib intentionally omitted: it is not imported anywhere -- the
+# visualizers render client-side on a canvas, not as server-side PNGs. If
+# server-side plotting is added later, re-add it here pinned to a tested version.
